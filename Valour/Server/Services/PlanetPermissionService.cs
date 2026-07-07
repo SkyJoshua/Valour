@@ -352,6 +352,20 @@ public class PlanetPermissionService
         return access != null && access.Contains(channelId);
     }
 
+    public async ValueTask<bool> HasChannelAccessAsync(long planetId, long representativeMemberId,
+        long representativeUserId, PlanetRoleMembership roleMembership, long channelId)
+    {
+        var access = await GetChannelAccessForMemberAsync(new Valour.Database.PlanetMember
+        {
+            Id = representativeMemberId,
+            UserId = representativeUserId,
+            PlanetId = planetId,
+            RoleMembership = roleMembership
+        });
+
+        return access != null && access.Contains(channelId);
+    }
+
     /// <summary>
     /// For each requested channel, returns the user ids of currently-connected planet members
     /// who can view it. Used to scope channel create/update/delete notifications so they only

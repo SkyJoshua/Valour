@@ -11,6 +11,22 @@ namespace Valour.Server.Services;
 
 public class NotificationService
 {
+    private readonly record struct RoleMemberRow(long Id, long UserId, PlanetRoleMembership RoleMembership);
+
+    private static int CompareByRoleMembership(RoleMemberRow a, RoleMemberRow b)
+    {
+        var cmp = a.RoleMembership.Rf0.CompareTo(b.RoleMembership.Rf0);
+        if (cmp != 0) return cmp;
+
+        cmp = a.RoleMembership.Rf1.CompareTo(b.RoleMembership.Rf1);
+        if (cmp != 0) return cmp;
+
+        cmp = a.RoleMembership.Rf2.CompareTo(b.RoleMembership.Rf2);
+        if (cmp != 0) return cmp;
+
+        return a.RoleMembership.Rf3.CompareTo(b.RoleMembership.Rf3);
+    }
+
     private readonly ValourDb _db;
     private readonly CoreHubService _coreHub;
     private readonly NodeLifecycleService _nodeLifecycleService;
@@ -18,15 +34,17 @@ public class NotificationService
     private readonly PushNotificationWorker _pushNotificationWorker;
     private readonly HostedPlanetService _hostedService;
     private readonly ChannelWatchingService _channelWatchingService;
-    
+    private readonly PlanetPermissionService _permissionService;
+
     public NotificationService(
-        ValourDb db, 
+        ValourDb db,
         CoreHubService coreHub,
         NodeLifecycleService nodeLifecycleService,
-        ILogger<NotificationService> logger, 
-        PushNotificationWorker pushNotificationWorker, 
+        ILogger<NotificationService> logger,
+        PushNotificationWorker pushNotificationWorker,
         HostedPlanetService hostedService,
-        ChannelWatchingService channelWatchingService)
+        ChannelWatchingService channelWatchingService,
+        PlanetPermissionService permissionService)
     {
         _db = db;
         _coreHub = coreHub;
@@ -35,6 +53,7 @@ public class NotificationService
         _pushNotificationWorker = pushNotificationWorker;
         _hostedService = hostedService;
         _channelWatchingService = channelWatchingService;
+        _permissionService = permissionService;
     }
     
     public async Task<Models.Notification> GetNotificationAsync(Guid id)
@@ -173,14 +192,48 @@ public class NotificationService
 
         baseNotification.Body ??= "";
 
-        var userIds = await _db.PlanetMembers
+        var roleMembers = await _db.PlanetMembers
             .AsNoTracking()
-            .WithRoleByLocalIndex(hostedPlanet.Planet.Id,  role.FlagBitIndex)
-            .Select(x => x.UserId)
-            .Distinct()
-            .ToArrayAsync();
+            .WithRoleByLocalIndex(hostedPlanet.Planet.Id, role.FlagBitIndex)
+            .Select(x => new RoleMemberRow(x.Id, x.UserId, x.RoleMembership))
+            .ToListAsync();
 
-        if (userIds.Length == 0)
+        if (roleMembers.Count == 0)
+            return;
+
+        var userIds = new List<long>(roleMembers.Count);
+        if (baseNotification.ChannelId is { } mentionChannelId)
+        {
+            roleMembers.Sort(CompareByRoleMembership);
+
+            var runStart = 0;
+            for (var i = 1; i <= roleMembers.Count; i++)
+            {
+                if (i < roleMembers.Count && roleMembers[i].RoleMembership == roleMembers[runStart].RoleMembership)
+                    continue;
+
+                var representative = roleMembers[runStart];
+                if (await _permissionService.HasChannelAccessAsync(
+                        hostedPlanet.Planet.Id,
+                        representative.Id,
+                        representative.UserId,
+                        representative.RoleMembership,
+                        mentionChannelId))
+                {
+                    for (var j = runStart; j < i; j++)
+                        userIds.Add(roleMembers[j].UserId);
+                }
+
+                runStart = i;
+            }
+        }
+        else
+        {
+            foreach (var roleMember in roleMembers)
+                userIds.Add(roleMember.UserId);
+        }
+
+        if (userIds.Count == 0)
             return;
 
         var preferenceMasks = await _db.UserPreferences
@@ -535,6 +588,12 @@ public class NotificationService
             
         var targetMember = await _db.PlanetMembers.FindAsync(mention.TargetId);
         if (targetMember is null)
+            return;
+
+        if (targetMember.PlanetId != planet.Id)
+            return;
+
+        if (!await _permissionService.HasChannelAccessAsync(targetMember.Id, channel.Id))
             return;
 
         var content = await ReplaceMentionTagsAsync(message.Content);
