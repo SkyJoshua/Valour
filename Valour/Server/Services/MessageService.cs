@@ -188,7 +188,43 @@ public class MessageService
 
         message.Id = Valour.Server.Database.IdManager.Generate();
         message.TimeSent = DateTime.UtcNow;
-        
+
+        // A new message may only start with reactions from its own author.
+        // Identity and timestamp fields are always regenerated server-side
+        // so none of it can be forged via the request body.
+        if (message.Reactions is { Count: > 0 } incomingReactions)
+        {
+            List<MessageReaction> validReactions = null;
+            HashSet<string> seenEmojis = null;
+
+            foreach (var reaction in incomingReactions)
+            {
+                if (reaction.AuthorUserId != message.AuthorUserId || reaction.AuthorMemberId != message.AuthorMemberId)
+                    continue;
+
+                seenEmojis ??= [];
+                if (!seenEmojis.Add(reaction.Emoji))
+                    continue;
+
+                validReactions ??= new List<MessageReaction>(incomingReactions.Count);
+                validReactions.Add(new MessageReaction()
+                {
+                    Id = IdManager.Generate(),
+                    Emoji = reaction.Emoji,
+                    MessageId = message.Id,
+                    AuthorUserId = message.AuthorUserId,
+                    AuthorMemberId = message.AuthorMemberId,
+                    CreatedAt = DateTime.UtcNow,
+                });
+            }
+
+            message.Reactions = validReactions;
+        }
+        else
+        {
+            message.Reactions = null;
+        }
+
         var attachments = message.Attachments?.Where(x => x is not null).ToList();
         if (attachments is not null)
         {
