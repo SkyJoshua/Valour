@@ -443,7 +443,8 @@
     private async Task SwitchBigEmojiMessages()
     {
         await DevicePreferences.SetBigEmojiMessages(!DevicePreferences.BigEmojiMessages, LocalStorage);
-      
+    }
+
     private async Task OnClickAlwaysShowTimestamps()
     {
         ClientFlags.AlwaysShowTimestamps = !ClientFlags.AlwaysShowTimestamps;
