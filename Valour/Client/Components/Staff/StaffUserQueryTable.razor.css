@@ -3,3 +3,32 @@
     flex-direction: row;
     gap: 1em;
 }
+
+.bulk-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75em;
+    padding: 0.6em 0.85em;
+    margin-bottom: 0.75em;
+    background-color: var(--main-2);
+    border: 1px solid var(--slight-tint);
+    border-radius: var(--radius-md);
+}
+
+.bulk-actions-count {
+    color: var(--font-alt-color);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    white-space: nowrap;
+}
+
+.bulk-actions-buttons {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.5em;
+}
+

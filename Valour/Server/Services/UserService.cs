@@ -1186,10 +1186,6 @@ public class UserService
                 .Where(x => x.UserId == dbUser.Id)
                 .ExecuteDeleteAsync();
 
-            // Remove member channel access records (before planet members, since access FK to members)
-            await _db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM member_channel_access WHERE user_id = {dbUser.Id}");
-
             // Remove planet membership
             var members = _db.PlanetMembers.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
             _db.PlanetMembers.RemoveRange(members);

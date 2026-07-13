@@ -2,7 +2,20 @@
 @inject ValourClient Client
 @inject StaffService StaffService
 
-<QueryTable 
+@if (_selectedIds.Count > 0)
+{
+    <div class="bulk-actions">
+        <span class="bulk-actions-count">@_selectedIds.Count selected</span>
+        <div class="bulk-actions-buttons">
+            <button class="v-btn secondary" @onclick="@(() => BulkSetDisabled(true))">Disable Selected</button>
+            <button class="v-btn primary" @onclick="@(() => BulkSetDisabled(false))">Enable Selected</button>
+            <button class="v-btn danger" @onclick="@BulkDeleteSelected">Delete Selected</button>
+            <button class="v-btn" @onclick="@(() => _selectedIds.Clear())">Clear Selection</button>
+        </div>
+    </div>
+}
+
+<QueryTable
     @ref="@_table"
     Columns="@_columns"
     Engine="@_engine"
@@ -18,17 +31,31 @@
     private QueryTable<User> _table;
 
     private List<ColumnDefinition<User>> _columns;
-    
+
     private string _nameSearch = string.Empty;
 
     private StaffUserQueryEngine _engine;
 
+    private readonly HashSet<long> _selectedIds = new();
+
     protected override void OnInitialized()
     {
         _engine = new StaffUserQueryEngine(Client.PrimaryNode);
-        
+
         _columns = new()
         {
+            new ()
+            {
+                Name = "",
+                Width = "76px",
+                RenderFragment = (rowData) =>
+                    @<label class="switch">
+                        <input type="checkbox"
+                               checked="@_selectedIds.Contains(rowData.Row.Id)"
+                               @onchange="@(e => ToggleSelected(rowData.Row.Id, (bool)e.Value!))" />
+                        <span class="slider round"></span>
+                    </label>
+            },
             new ()
             {
                 Name = "Card",
@@ -54,11 +81,19 @@
                         {
                             <button class="v-btn secondary" @onclick="@(async () => await DisableUser(rowData.Row.Id))">Disable</button>
                         }
-                        
+
                         <button class="v-btn danger" @onclick="@(async () => await DeleteUser(rowData.Row))">Delete</button>
                     </div>
             }
         };
+    }
+
+    private void ToggleSelected(long userId, bool isSelected)
+    {
+        if (isSelected)
+            _selectedIds.Add(userId);
+        else
+            _selectedIds.Remove(userId);
     }
     
     /* Staff Controls */
@@ -116,7 +151,7 @@
                     Message = "Waiting for result...",
                     ProgressTask = StaffService.DeleteUserAsync(user.Id)
                 };
-        
+
                 var result = await ToastContainer.Instance.WaitToastWithTaskResult(toastData);
 
                 if (result.Success)
@@ -127,5 +162,74 @@
         });
 
         return Task.CompletedTask;
+    }
+
+    private async Task BulkSetDisabled(bool value)
+    {
+        var ids = _selectedIds.ToList();
+
+        var toastData = new ProgressToastData<TaskResult<BulkActionResult>>()
+        {
+            Title = value ? "Disabling Users" : "Enabling Users",
+            SuccessMessage = "Bulk action complete",
+            Message = $"Updating {ids.Count} users...",
+            ProgressTask = StaffService.BulkSetUsersDisabledAsync(ids, value)
+        };
+
+        var result = await ToastContainer.Instance.WaitToastWithTaskResult(toastData);
+
+        if (result.Success)
+        {
+            _selectedIds.Clear();
+            await _table.Requery();
+            ReportBulkFailures(result.Data);
+        }
+    }
+
+    private Task BulkDeleteSelected()
+    {
+        var ids = _selectedIds.ToList();
+
+        ModalRoot.OpenModal<ConfirmModalComponent>(new ConfirmModalComponent.ModalParams()
+        {
+            Title = $"Hard Delete {ids.Count} Users?",
+            Description = "This CANNOT be undone. Are you sure you want to delete all selected users?",
+            CancelText = "Cancel",
+            ConfirmText = "DELETE",
+            ConfirmEvent = async () =>
+            {
+                var toastData = new ProgressToastData<TaskResult<BulkActionResult>>()
+                {
+                    Title = "Deleting Users",
+                    SuccessMessage = "Bulk delete complete",
+                    Message = $"Deleting {ids.Count} users...",
+                    ProgressTask = StaffService.BulkDeleteUsersAsync(ids)
+                };
+
+                var result = await ToastContainer.Instance.WaitToastWithTaskResult(toastData);
+
+                if (result.Success)
+                {
+                    _selectedIds.Clear();
+                    await _table.Requery();
+                    ReportBulkFailures(result.Data);
+                }
+            }
+        });
+
+        return Task.CompletedTask;
+    }
+
+    private static void ReportBulkFailures(BulkActionResult data)
+    {
+        if (data?.Failures is not { Count: > 0 })
+            return;
+
+        var reasons = string.Join("; ", data.Failures.Select(f => $"{f.UserId}: {f.Message}"));
+        ToastContainer.Instance.AddToast(new ToastData()
+        {
+            Title = $"{data.Failures.Count} user(s) failed",
+            Message = reasons
+        });
     }
 }

@@ -95,17 +95,35 @@ public class StaffApi
     {
         var requestor = await userService.GetCurrentUserAsync();
         
-        // For now, only Spike can do this
-        if (requestor.Id != 12200448886571008)
-        {
-            return ValourResult.Forbid("SuperAdmins only.");
-        }
-        
         var result = await staffService.DeleteUserAsync(request.UserId);
         if (!result.Success)
             return ValourResult.BadRequest(result.Message);
 
         return ValourResult.Ok();
+    }
+
+    [StaffRequired]
+    [ValourRoute(HttpVerbs.Post, "api/staff/disable/bulk")]
+    public static async Task<IResult> BulkDisableUsersAsync(UserService userService, StaffService staffService, [FromBody] BulkDisableUsersRequest request)
+    {
+        if (request?.UserIds is null || request.UserIds.Count == 0)
+            return ValourResult.BadRequest("No user ids provided.");
+
+        var requestor = await userService.GetCurrentUserAsync();
+        var result = await staffService.BulkDisableUsersAsync(request.UserIds, request.Value, requestor.Id);
+        return Results.Json(result);
+    }
+
+    [StaffRequired]
+    [ValourRoute(HttpVerbs.Post, "api/staff/delete/bulk")]
+    public static async Task<IResult> BulkDeleteUsersAsync(UserService userService, StaffService staffService, [FromBody] BulkUserIdsRequest request)
+    {
+        if (request?.UserIds is null || request.UserIds.Count == 0)
+            return ValourResult.BadRequest("No user ids provided.");
+
+        var requestor = await userService.GetCurrentUserAsync();
+        var result = await staffService.BulkDeleteUsersAsync(request.UserIds, requestor.Id);
+        return Results.Json(result);
     }
 
     [StaffRequired]

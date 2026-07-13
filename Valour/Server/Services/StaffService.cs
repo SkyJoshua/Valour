@@ -138,8 +138,52 @@ public class StaffService
         {
             return TaskResult.FromFailure(e.Message);
         }
-        
+
         return TaskResult.SuccessResult;
+    }
+
+    public async Task<BulkActionResult> BulkDisableUsersAsync(List<long> userIds, bool value, long requestorId)
+    {
+        var result = new BulkActionResult();
+
+        foreach (var userId in userIds.Distinct())
+        {
+            if (userId == requestorId)
+            {
+                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = "Cannot disable your own account." });
+                continue;
+            }
+
+            var r = await DisableUserAsync(userId, value);
+            if (r.Success)
+                result.SuccessCount++;
+            else
+                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = r.Message });
+        }
+
+        return result;
+    }
+
+    public async Task<BulkActionResult> BulkDeleteUsersAsync(List<long> userIds, long requestorId)
+    {
+        var result = new BulkActionResult();
+
+        foreach (var userId in userIds.Distinct())
+        {
+            if (userId == requestorId)
+            {
+                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = "Cannot delete your own account." });
+                continue;
+            }
+
+            var r = await DeleteUserAsync(userId);
+            if (r.Success)
+                result.SuccessCount++;
+            else
+                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = r.Message });
+        }
+
+        return result;
     }
 
     public async Task<Message> GetMessageAsync(long messageId)
