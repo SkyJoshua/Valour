@@ -122,6 +122,17 @@
                         </div>
                     </div>
 
+                    <div class="channel-setting" @onclick="@OnClickDoubleClickEditReply">
+                        <div class="setting-icon"><i class="bi bi-cursor-fill"></i></div>
+                        <div class="setting-text">
+                            <span class="setting-title">Double-Click to Edit/Reply</span>
+                            <span class="setting-subtitle">Double-click your own message to edit it, or someone else's to reply</span>
+                        </div>
+                        <div class="toggle-switch @(ClientFlags.DoubleClickEditReply ? "on" : "")">
+                            <div class="toggle-knob"></div>
+                        </div>
+                    </div>
+
                 }
             </div>
         }
@@ -161,6 +172,9 @@
 
         if (await LocalStorage.ContainsKeyAsync("translate-language"))
             ClientFlags.TranslateLanguage = await LocalStorage.GetAsync<string>("translate-language");
+
+        if (await LocalStorage.ContainsKeyAsync("double-click-edit-reply"))
+            ClientFlags.DoubleClickEditReply = await LocalStorage.GetAsync<bool>("double-click-edit-reply");
 
         // Always fetch the online list so everyone can see others' badges.
         ModdedPresenceService.StartListRefresh(JsRuntime);
@@ -227,6 +241,13 @@
         ClientFlags.ShowEditHistory = !ClientFlags.ShowEditHistory;
         await LocalStorage.SetAsync("show-edit-history", ClientFlags.ShowEditHistory);
         ClientFlags.NotifyChanged();
+        StateHasChanged();
+    }
+
+    private async Task OnClickDoubleClickEditReply()
+    {
+        ClientFlags.DoubleClickEditReply = !ClientFlags.DoubleClickEditReply;
+        await LocalStorage.SetAsync("double-click-edit-reply", ClientFlags.DoubleClickEditReply);
         StateHasChanged();
     }
 

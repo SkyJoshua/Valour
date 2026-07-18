@@ -62,6 +62,14 @@
     </ContextMenuItem>
 }
 
+@if (Data.Message.EditHistory is { Count: > 0 })
+{
+    <ContextMenuItem OnClickAsync="@OnClickRemoveHistory" Color="red">
+        <Label>Remove Message History</Label>
+        <Icon><i class="bi bi-eraser-fill"></i></Icon>
+    </ContextMenuItem>
+}
+
 @if (_authorMember is not null)
 {
     <ContextSubMenu>
@@ -289,6 +297,16 @@ else if (_deletePermission == PermissionState.True)
     {
         await CloseAsync();
         await Data.MessageComponent.OpenEditMode();
+    }
+
+    private async Task OnClickRemoveHistory()
+    {
+        await CloseAsync();
+
+        // EditHistory is a client-side-only cache (see Message.EditHistory) - clearing it
+        // only affects this message on this client, nothing is sent to the server.
+        Data.Message.EditHistory = null;
+        await Data.MessageComponent.ReRender();
     }
 
     private async Task OnClickTranslate()

@@ -23,6 +23,11 @@ public static class ClientFlags
     public static TimestampFormat TimestampFormat { get; set; } = TimestampFormat.TwelveHour;
 
     /// <summary>
+    /// Double-clicking a message edits it if it's yours, or starts a reply if it isn't.
+    /// </summary>
+    public static bool DoubleClickEditReply { get; set; } = true;
+
+    /// <summary>
     /// The language messages are translated into via the message right-click "Translate" option.
     /// </summary>
     public static string TranslateLanguage { get; set; } = "en";

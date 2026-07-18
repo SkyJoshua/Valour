@@ -22,6 +22,7 @@ else
      @oncontextpress="@OnContextMenu"
      @oncontextpress:stopPropagation="true"
      @onpointerdown="@OnPointerDown"
+     @ondblclick="@OnDoubleClick"
      @ref="OuterRef">
     
     <div class="left-info">
@@ -745,6 +746,24 @@ else
     {
         BuildMessage();
         await CloseEditMode();
+    }
+
+    private async Task OnDoubleClick()
+    {
+        if (!ClientFlags.DoubleClickEditReply)
+            return;
+
+        if (_ghost || _isInnerReply || _message.IsDeleted)
+            return;
+
+        if (_message.AuthorUserId == Client.Me.Id)
+        {
+            await OpenEditMode();
+        }
+        else if (_chat?.InputComponent is not null)
+        {
+            await _chat.InputComponent.SetReplyMessage(_message);
+        }
     }
 
     private void OnContextMenu(ContextPressEventArgs e)
