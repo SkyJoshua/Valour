@@ -45,7 +45,7 @@ public class StaffService : ServiceBase
         return await _client.PrimaryNode.PostAsync($"api/staff/delete", request);
     }
 
-    public async Task<TaskResult<BulkActionResult>> BulkSetUsersDisabledAsync(List<long> userIds, bool value)
+    public async Task<TaskResult<BulkActionResult>> BulkSetUsersDisabledAsync(long[] userIds, bool value)
     {
         var request = new BulkDisableUsersRequest()
         {
@@ -56,7 +56,7 @@ public class StaffService : ServiceBase
         return await _client.PrimaryNode.PostAsyncWithResponse<BulkActionResult>("api/staff/disable/bulk", request);
     }
 
-    public async Task<TaskResult<BulkActionResult>> BulkDeleteUsersAsync(List<long> userIds)
+    public async Task<TaskResult<BulkActionResult>> BulkDeleteUsersAsync(long[] userIds)
     {
         var request = new BulkUserIdsRequest()
         {

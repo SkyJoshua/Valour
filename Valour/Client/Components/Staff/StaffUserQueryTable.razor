@@ -166,13 +166,13 @@
 
     private async Task BulkSetDisabled(bool value)
     {
-        var ids = _selectedIds.ToList();
+        var ids = _selectedIds.ToArray();
 
         var toastData = new ProgressToastData<TaskResult<BulkActionResult>>()
         {
             Title = value ? "Disabling Users" : "Enabling Users",
             SuccessMessage = "Bulk action complete",
-            Message = $"Updating {ids.Count} users...",
+            Message = $"Updating {ids.Length} users...",
             ProgressTask = StaffService.BulkSetUsersDisabledAsync(ids, value)
         };
 
@@ -188,11 +188,11 @@
 
     private Task BulkDeleteSelected()
     {
-        var ids = _selectedIds.ToList();
+        var ids = _selectedIds.ToArray();
 
         ModalRoot.OpenModal<ConfirmModalComponent>(new ConfirmModalComponent.ModalParams()
         {
-            Title = $"Hard Delete {ids.Count} Users?",
+            Title = $"Hard Delete {ids.Length} Users?",
             Description = "This CANNOT be undone. Are you sure you want to delete all selected users?",
             CancelText = "Cancel",
             ConfirmText = "DELETE",
@@ -202,7 +202,7 @@
                 {
                     Title = "Deleting Users",
                     SuccessMessage = "Bulk delete complete",
-                    Message = $"Deleting {ids.Count} users...",
+                    Message = $"Deleting {ids.Length} users...",
                     ProgressTask = StaffService.BulkDeleteUsersAsync(ids)
                 };
 

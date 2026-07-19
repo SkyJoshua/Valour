@@ -106,7 +106,7 @@ public class StaffApi
     [ValourRoute(HttpVerbs.Post, "api/staff/disable/bulk")]
     public static async Task<IResult> BulkDisableUsersAsync(UserService userService, StaffService staffService, [FromBody] BulkDisableUsersRequest request)
     {
-        if (request?.UserIds is null || request.UserIds.Count == 0)
+        if (request?.UserIds is null || request.UserIds.Length == 0)
             return ValourResult.BadRequest("No user ids provided.");
 
         var requestor = await userService.GetCurrentUserAsync();
@@ -118,7 +118,7 @@ public class StaffApi
     [ValourRoute(HttpVerbs.Post, "api/staff/delete/bulk")]
     public static async Task<IResult> BulkDeleteUsersAsync(UserService userService, StaffService staffService, [FromBody] BulkUserIdsRequest request)
     {
-        if (request?.UserIds is null || request.UserIds.Count == 0)
+        if (request?.UserIds is null || request.UserIds.Length == 0)
             return ValourResult.BadRequest("No user ids provided.");
 
         var requestor = await userService.GetCurrentUserAsync();

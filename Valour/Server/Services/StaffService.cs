@@ -142,15 +142,20 @@ public class StaffService
         return TaskResult.SuccessResult;
     }
 
-    public async Task<BulkActionResult> BulkDisableUsersAsync(List<long> userIds, bool value, long requestorId)
+    public async Task<BulkActionResult> BulkDisableUsersAsync(long[] userIds, bool value, long requestorId)
     {
         var result = new BulkActionResult();
+        HashSet<long> seen = null;
 
-        foreach (var userId in userIds.Distinct())
+        foreach (var userId in userIds)
         {
+            seen ??= new HashSet<long>(userIds.Length);
+            if (!seen.Add(userId))
+                continue;
+
             if (userId == requestorId)
             {
-                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = "Cannot disable your own account." });
+                (result.Failures ??= new()).Add(new BulkActionFailure { UserId = userId, Message = "Cannot disable your own account." });
                 continue;
             }
 
@@ -158,21 +163,26 @@ public class StaffService
             if (r.Success)
                 result.SuccessCount++;
             else
-                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = r.Message });
+                (result.Failures ??= new()).Add(new BulkActionFailure { UserId = userId, Message = r.Message });
         }
 
         return result;
     }
 
-    public async Task<BulkActionResult> BulkDeleteUsersAsync(List<long> userIds, long requestorId)
+    public async Task<BulkActionResult> BulkDeleteUsersAsync(long[] userIds, long requestorId)
     {
         var result = new BulkActionResult();
+        HashSet<long> seen = null;
 
-        foreach (var userId in userIds.Distinct())
+        foreach (var userId in userIds)
         {
+            seen ??= new HashSet<long>(userIds.Length);
+            if (!seen.Add(userId))
+                continue;
+
             if (userId == requestorId)
             {
-                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = "Cannot delete your own account." });
+                (result.Failures ??= new()).Add(new BulkActionFailure { UserId = userId, Message = "Cannot delete your own account." });
                 continue;
             }
 
@@ -180,7 +190,7 @@ public class StaffService
             if (r.Success)
                 result.SuccessCount++;
             else
-                result.Failures.Add(new BulkActionFailure { UserId = userId, Message = r.Message });
+                (result.Failures ??= new()).Add(new BulkActionFailure { UserId = userId, Message = r.Message });
         }
 
         return result;
