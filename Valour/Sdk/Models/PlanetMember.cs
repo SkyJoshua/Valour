@@ -160,6 +160,20 @@ public class PlanetMember : ClientPlanetModel<PlanetMember, long>, ISharedPlanet
 
     public override void SyncSubModels(ModelInsertFlags flags = ModelInsertFlags.None)
     {
+        if (User is null)
+            return;
+
+        // A community node is allowed to provide display data for a member of
+        // its planet, but not to mutate the hub-wide User cache. Keeping the
+        // snapshot on the membership prevents a malicious node from spoofing
+        // account fields (staff status, profile, presence, and so on) for an
+        // arbitrary hub user id.
+        if (Node?.IsExternal == true)
+        {
+            User.SetClient(Client);
+            return;
+        }
+
         User = User.Sync(Client, flags);
     }
 
@@ -169,7 +183,7 @@ public class PlanetMember : ClientPlanetModel<PlanetMember, long>, ISharedPlanet
     public PlanetRole GetDisplayedRoleAsync(bool refresh = false)
     {
         // Return first role that has the display role, or the last (default)
-        return Roles.FirstOrDefault(x => x.HasPermission(PlanetPermissions.DisplayRole));
+        return Roles.FirstOrDefault(x => x.HasDisplayRole);
     }
 
     /// <summary>

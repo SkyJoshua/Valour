@@ -1,16 +1,15 @@
 ﻿using System.Net;
-using Amazon.Runtime;
-using Amazon.S3;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
 using System.Text.Json;
-using Amazon;
 using CloudFlare.Client;
 using StackExchange.Redis;
 using Valour.Server.API;
 using Valour.Server.Cdn;
 using Valour.Server.Cdn.Api;
 using Valour.Server.Cdn.Extensions;
+using Valour.Server.Cdn.Storage;
 using Valour.Server.Email;
 using Valour.Server.Redis;
 using Valour.Server.Workers;
@@ -43,8 +42,12 @@ public partial class Program
         // Load configs
         ConfigLoader.LoadConfigs();
 
-        // Propagate configured CDN hosts to the shared source of truth used by
+        // Propagate configured hosts to the shared source of truth used by
         // shared models and the database layer.
+        ValourHosts.RootDomain = HostingConfig.Current.RootDomain;
+        ValourHosts.AppHost = HostingConfig.Current.AppHost;
+        ValourHosts.ThreadsHost = HostingConfig.Current.ThreadsHost;
+        ValourHosts.WikiHost = HostingConfig.Current.WikiHost;
         ValourHosts.ContentCdnHost = HostingConfig.Current.ContentCdnHost;
         ValourHosts.PublicCdnHost = HostingConfig.Current.PublicCdnHost;
 
@@ -110,47 +113,28 @@ public partial class Program
         UploadApi.AddRoutes(app);
         ProxyApi.AddRoutes(app);
 
+        // In filesystem storage mode the server itself serves public assets
+        // (avatars, icons, emoji) under /valour-public/; in s3 mode an external
+        // public CDN host serves them.
+        if (app.Services.GetRequiredService<CdnStorageProvider>().Mode == CdnStorageMode.FileSystem)
+        {
+            PublicContentApi.AddRoutes(app);
+        }
+
         // Add API routes
         BaseAPI.AddRoutes(app);
+        InstanceApi.AddRoutes(app);
         EmbedAPI.AddRoutes(app);
         OauthAppApi.StartCodeCleanupTask();
         VoiceSignallingApi.AddRoutes(app);
         
-        // s3 (r2) setup
-        
-        //AWSConfigsS3.UseSignatureVersion4 = true;
-
-        if (CdnConfig.Current is not null)
-        {
-            // private bucket
-            BasicAWSCredentials cred = new(CdnConfig.Current.S3Access, CdnConfig.Current.S3Secret);
-            var config = new AmazonS3Config()
-            {
-                ServiceURL = CdnConfig.Current.S3Endpoint
-            };
-
-            AmazonS3Client client = new(cred, config);
-            CdnBucketService.Client = client;
-            
-            // public bucket
-            BasicAWSCredentials publicCred = new(CdnConfig.Current.PublicS3Access, CdnConfig.Current.PublicS3Secret);
-            var publicConfig = new AmazonS3Config()
-            {
-                ServiceURL = CdnConfig.Current.PublicS3Endpoint
-            };
-            
-            AmazonS3Client publicClient = new(publicCred, publicConfig);
-            CdnBucketService.PublicClient = publicClient;
-        }
-        else
-        {
-            Console.WriteLine("Missing CDN config - file uploads will not function properly");
-        }
-
         DynamicApis = new()
         {
             new DynamicAPI<UserApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetApi>().RegisterRoutes(app),
+            new DynamicAPI<PlanetStorageApi>().RegisterRoutes(app),
+            new DynamicAPI<PlanetVoiceApi>().RegisterRoutes(app),
+            new DynamicAPI<FederationApi>().RegisterRoutes(app),
             new DynamicAPI<ChannelApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetMemberApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetRoleApi>().RegisterRoutes(app),
@@ -158,6 +142,7 @@ public partial class Program
             new DynamicAPI<PlanetRuleApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetReportApi>().RegisterRoutes(app),
             new DynamicAPI<ThreadApi>().RegisterRoutes(app),
+            new DynamicAPI<PlanetWikiApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetInviteApi>().RegisterRoutes(app),
             new DynamicAPI<PlanetBanApi>().RegisterRoutes(app),
             new DynamicAPI<PermissionsNodeApi>().RegisterRoutes(app),
@@ -165,6 +150,7 @@ public partial class Program
             new DynamicAPI<UserFriendApi>().RegisterRoutes(app),
             new DynamicAPI<UserBlockApi>().RegisterRoutes(app),
             new DynamicAPI<OauthAppApi>().RegisterRoutes(app),
+            new DynamicAPI<GifFavoriteApi>().RegisterRoutes(app),
             new DynamicAPI<TenorFavoriteApi>().RegisterRoutes(app),
             new DynamicAPI<EcoApi>().RegisterRoutes(app),
             new DynamicAPI<NotificationApi>().RegisterRoutes(app),
@@ -249,6 +235,42 @@ public partial class Program
             await next();
         });
 
+        // Clean URLs on the docs subdomain (wiki.valour.gg/{planetIdOrVanity}/{pageSlug})
+        // are rewritten to the underlying /docs/... Razor pages. Only active when
+        // the docs host is distinct — in single-domain self-host mode the docs
+        // pages stay at the /docs/... path so bare /{vanity} paths can never
+        // swallow app routes.
+        var wikiHost = HostingConfig.Current.WikiHost;
+        var wikiHostDistinct =
+            !string.Equals(wikiHost, HostingConfig.Current.AppHost, StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(wikiHost, HostingConfig.Current.RootDomain, StringComparison.OrdinalIgnoreCase);
+        if (wikiHostDistinct)
+        {
+            app.Use(async (context, next) =>
+            {
+                if (string.Equals(context.Request.Host.Host, wikiHost, StringComparison.OrdinalIgnoreCase) &&
+                    !context.Request.Path.StartsWithSegments("/wiki", StringComparison.OrdinalIgnoreCase) &&
+                    !context.Request.Path.StartsWithSegments("/_content", StringComparison.OrdinalIgnoreCase) &&
+                    !context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (context.Request.Path.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        context.Response.ContentType = "text/plain";
+                        await context.Response.WriteAsync("User-agent: *\nAllow: /\n");
+                        return;
+                    }
+
+                    var segments = context.Request.Path.Value?
+                        .Split('/', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
+
+                    if (segments.Length is 1 or 2 && segments.All(IsWikiRewriteSegment))
+                        context.Request.Path = "/wiki/" + string.Join('/', segments);
+                }
+
+                await next();
+            });
+        }
+
         app.UseRouting();
 
         app.UseAuthentication();
@@ -272,6 +294,73 @@ public partial class Program
         });
     }
 
+    /// <summary>
+    /// True for docs clean-URL segments: planet ids, vanity names, page slugs
+    /// (letters/digits/dashes), or the literal sitemap.xml.
+    /// </summary>
+    private static bool IsWikiRewriteSegment(string segment)
+    {
+        if (string.Equals(segment, "sitemap.xml", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (string.IsNullOrEmpty(segment) || segment.Length > 64)
+            return false;
+
+        foreach (var c in segment)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c != '-')
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// CORS origins derived from the local deployment plus the configured
+    /// federation hub. Community nodes must accept the hub app's browser
+    /// origin for the SDK's direct HTTP and SignalR connections, but must not
+    /// reflect arbitrary origins while allowing credentials.
+    /// </summary>
+    private static string[] BuildCorsOrigins()
+    {
+        var hosting = HostingConfig.Current;
+        var origins = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            $"https://{hosting.AppHost}",
+            $"http://{hosting.AppHost}",
+            $"https://www.{hosting.RootDomain}",
+            $"http://www.{hosting.RootDomain}",
+            $"https://{hosting.RootDomain}",
+            $"http://{hosting.RootDomain}",
+            $"https://{hosting.ApiHost}",
+            $"http://{hosting.ApiHost}",
+            "http://localhost:3000",
+            "https://localhost:3000",
+            "http://localhost:3001",
+            "https://localhost:3001",
+            "http://localhost:5000",
+            "http://localhost:5001",
+        };
+
+        // The node trusts this URL as its federation hub already. Permit the
+        // hub itself and the conventional app subdomain so a browser signed in
+        // to the hub can use this node as a separate origin. Operators whose
+        // app is hosted at the hub root are covered by the first entry.
+        if (Uri.TryCreate(FederationConfig.Current?.HubUrl, UriKind.Absolute, out var hubUri) &&
+            (hubUri.Scheme == Uri.UriSchemeHttps || hubUri.Scheme == Uri.UriSchemeHttp))
+        {
+            origins.Add(hubUri.GetLeftPart(UriPartial.Authority));
+            if (!hubUri.Host.StartsWith("app.", StringComparison.OrdinalIgnoreCase))
+            {
+                var appOrigin = new UriBuilder(hubUri.Scheme, $"app.{hubUri.Host}", hubUri.Port)
+                    .Uri.GetLeftPart(UriPartial.Authority);
+                origins.Add(appOrigin);
+            }
+        }
+
+        return origins.ToArray();
+    }
+
     public static void ConfigureServices(WebApplicationBuilder builder)
     {
         var services = builder.Services;
@@ -283,24 +372,8 @@ public partial class Program
                 builder
                     .AllowAnyMethod()
                     .AllowAnyHeader()
-                    .SetIsOriginAllowed(_ => true)
                     .AllowCredentials()
-                    .WithOrigins(
-                        "https://app.valour.gg",
-                        "http://app.valour.gg",
-                        "https://www.valour.gg",
-                        "https://tenor.googleapis.com",
-                        "http://www.valour.gg",
-                        "https://valour.gg",
-                        "http://valour.gg",
-                        "https://api.valour.gg",
-                        "http://api.valour.gg",
-                        "http://localhost:3000",
-                        "https://localhost:3000",
-                        "http://localhost:3001",
-                        "http://localhost:5001",
-                        "http://localhost:5000",
-                        "https://localhost:3001");
+                    .WithOrigins(BuildCorsOrigins());
             });
         });
         
@@ -352,12 +425,50 @@ public partial class Program
         services.AddRazorPages();
         services.AddServerSideBlazor();
 
-        //if (!string.IsNullOrEmpty(CloudflareConfig.Instance?.ApiKey))
-        //{
-            services.AddSingleton<ICloudFlareClient>(provider =>
-                new CloudFlareClient(CloudflareConfig.Instance?.ApiKey ?? string.Empty));
-        //}
+        // CloudFlareClient throws on an empty token, but the client must always
+        // be registered (CdnBucketService depends on it). When no key is
+        // configured we pass a placeholder — cache purges are skipped when no
+        // zone is configured, so the placeholder client is never actually used.
+        services.AddSingleton<ICloudFlareClient>(provider =>
+            new CloudFlareClient(string.IsNullOrWhiteSpace(CloudflareConfig.Instance?.ApiKey)
+                ? "unconfigured"
+                : CloudflareConfig.Instance.ApiKey));
 
+        // Data Protection keys live in the shared DB so every node (and
+        // container restarts) can decrypt protected payloads such as planet
+        // storage credentials and federation signing keys. The ring itself is
+        // wrapped with an external KEK (env/file) when one is configured, so a
+        // database reader alone cannot recover any of it.
+        var kekProvider = new DataProtectionKekProvider(
+            builder.Configuration,
+            LoggerFactory.Create(b => b.AddConsole()).CreateLogger<DataProtectionKekProvider>());
+
+        // Federation signing keys are protected by the Data Protection ring.
+        // Running a hub or community node without an out-of-band KEK would put
+        // both the wrapped private key and the unwrapped ring in the same
+        // database, making the protection illusory. Fail before serving any
+        // federation endpoint rather than treating this as a deployment warning.
+        if ((FederationConfig.Current?.HubEnabled == true || FederationConfig.Current?.NodeEnabled == true)
+            && !kekProvider.Available)
+        {
+            throw new InvalidOperationException(
+                "Federation requires DataProtection:Kek (or DataProtection:KekFile). " +
+                "Use a stable base64-encoded 32-byte key stored outside the database.");
+        }
+
+        services.AddSingleton(kekProvider);
+
+        var dataProtection = services.AddDataProtection()
+            .SetApplicationName("Valour")
+            .PersistKeysToDbContext<ValourDb>();
+
+        if (kekProvider.Available)
+        {
+            dataProtection.Services.Configure<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>(
+                options => options.XmlEncryptor = new KekXmlEncryptor(kekProvider));
+        }
+
+        services.AddSingleton<CdnStorageProvider>();
         services.AddSingleton<CdnBucketService>();
 
         services.AddHttpClient<ProxyHandler>(client =>
@@ -390,6 +501,33 @@ public partial class Program
         services.AddSingleton<ModelCacheService>();
         services.AddSingleton<UserCacheService>();
         services.AddSingleton<RealtimeKitService>();
+        services.AddSingleton<LiveKitService>();
+        // The instance-wide backend is resolved from config: an explicit Voice__Provider
+        // wins; otherwise LiveKit is auto-selected only when it is configured and
+        // RealtimeKit is not, so the managed default is never silently changed.
+        // The coordinator wraps it to route bring-your-own-voice planets to their
+        // own SFUs per channel, and is what the rest of the server sees.
+        services.AddSingleton<VoiceCoordinator>(sp =>
+        {
+            var cf = CloudflareConfig.Instance;
+            var realtimeKitConfigured =
+                !string.IsNullOrWhiteSpace(cf?.RealtimeAccountId) &&
+                !string.IsNullOrWhiteSpace(cf?.RealtimeAppId) &&
+                !string.IsNullOrWhiteSpace(cf?.RealtimeApiToken);
+
+            IVoiceProvider instanceProvider =
+                VoiceProviderSelector.Resolve(VoiceConfig.Current, realtimeKitConfigured) == VoiceProvider.LiveKit
+                    ? sp.GetRequiredService<LiveKitService>()
+                    : sp.GetRequiredService<RealtimeKitService>();
+
+            return new VoiceCoordinator(
+                instanceProvider,
+                sp.GetRequiredService<LiveKitService>(),
+                sp,
+                sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
+                sp.GetRequiredService<ILogger<VoiceCoordinator>>());
+        });
+        services.AddSingleton<IVoiceProvider>(sp => sp.GetRequiredService<VoiceCoordinator>());
         services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 
         services.AddScoped<HostedPlanetService>();
@@ -407,6 +545,36 @@ public partial class Program
         services.AddScoped<ChatCacheService>();
         services.AddScoped<ChannelService>();
         services.AddScoped<MessageService>();
+        services.AddScoped<PlanetStorageService>();
+        services.AddScoped<PlanetVoiceService>();
+        services.AddScoped<FederationKeyService>();
+        services.AddScoped<FederationHubService>();
+        services.AddScoped<FederationNodeService>();
+        services.AddScoped<FederationPlanetRegistryService>();
+        services.AddScoped<FederationPlanetRegistrySyncService>();
+        services.AddScoped<FederationNodeClient>();
+        services.AddScoped<PlanetSnapshotService>();
+        services.AddScoped<FederationMigrationService>();
+        services.AddScoped<FederationPurgeService>();
+        services.AddScoped<FederationJoinService>();
+        services.AddScoped<FederationInviteService>();
+        services.AddScoped<FederationInviteReconciliationService>();
+
+        // Federation S2S/JWKS fetches. Insecure mode (dev/LAN clone networks)
+        // accepts self-signed certificates.
+        // Federation S2S/JWKS fetches to attacker-influenced node domains.
+        // The connect callback resolves and connects to a validated public IP,
+        // closing the DNS-rebinding window (the fetch cannot re-resolve to an
+        // internal address after a name-based check). Insecure mode (dev/LAN
+        // clone networks) allows private targets and self-signed certificates.
+        var federationInsecure = FederationConfig.Current?.AllowInsecure == true;
+        services.AddHttpClient("federation", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+        }).ConfigurePrimaryHttpMessageHandler(() =>
+            SsrfSafeConnect.CreateHandler(
+                allowPrivate: federationInsecure,
+                acceptAnyCertificate: federationInsecure));
         services.AddScoped<UserAttachmentService>();
         services.AddScoped<MediaSafetyService>();
         services.AddScoped<PlanetInviteService>();
@@ -416,7 +584,9 @@ public partial class Program
         services.AddScoped<PlanetRuleService>();
         services.AddScoped<PlanetReportService>();
         services.AddScoped<ThreadService>();
+        services.AddScoped<PlanetWikiService>();
         services.AddScoped<PlanetService>();
+        services.AddScoped<GifFavoriteService>();
         services.AddScoped<TenorFavoriteService>();
         services.AddScoped<AutomodService>();
         services.AddScoped<ModerationAuditService>();
@@ -450,7 +620,11 @@ public partial class Program
 
         services.AddHostedService<PlanetMessageWorker>();
         services.AddHostedService<StatWorker>();
+        services.AddHostedService<PendingMfaRemovalWorker>();
         services.AddHostedService<ChannelWatchingWorker>();
+        services.AddHostedService<FederationPurgeWorker>();
+        services.AddHostedService<FederationInviteReconciliationWorker>();
+        services.AddHostedService<FederationPlanetRegistrySyncWorker>();
         services.AddHostedService<UserOnlineWorker>();
         services.AddHostedService<NodeStateWorker>();
         services.AddHostedService<SubscriptionWorker>();

@@ -222,14 +222,14 @@
         {
             Client.Logger.Log<ChatWindowComponent>("Cannot set up chat window because channel data is null.", "red");
             _loading = false;
-            ReRender();
+            await ReRender();
             return;
         }
 
         if (!_loading)
         {
             _loading = true;
-            ReRender();
+            await ReRender();
         }
 
         try
@@ -291,7 +291,7 @@
         if (InputComponent is not null)
             await InputComponent.NotifyChannelLoadedAsync();
 
-        ReRender();
+        await ReRender();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -307,29 +307,54 @@
             // Setup must run first: MessageWrapperEl only exists in the DOM
             // once _loading is false, so the JS init has to wait for it.
             await SetupNewChannelAsync();
-            _jsModule = await JsRuntime.InvokeAsync<IJSObjectReference>("import", "./_content/Valour.Client/Components/Windows/ChannelWindows/ChatWindowComponent.razor.js");
-            _jsService = await _jsModule.InvokeAsync<IJSObjectReference>("init", _thisRef, MessageWrapperEl);
 
-            // Swipe-left-to-reply for touch devices. The :not() filters keep
-            // inner reply previews and ghost messages from being targets.
-            _touchSlide = new TouchSlide();
-            _touchSlide.SlideAction += OnMessageSwipeReply;
-            await _touchSlide.Initialize(MessageWrapperEl, ".message:not(.reply):not(.ghost)", JsRuntime);
+            // The window may have been closed while messages were loading;
+            // _thisRef is disposed then, and serializing it to JS throws
+            // ObjectDisposedException and crashes the app (#1554, #1566)
+            if (_disposed)
+                return;
 
-            // The notification path (TargetMessageId -> LoadAroundMessageAsync)
-            // wants to scroll before _jsService exists; it defers to here.
-            if (_pendingScrollToMessageId is not null)
+            try
             {
-                var target = _pendingScrollToMessageId.Value;
-                _pendingScrollToMessageId = null;
-                await ScrollToMessage(target, highlight: true);
-            }
-            else
-            {
-                await ScrollToBottom(true);
-            }
+                _jsModule = await JsRuntime.InvokeAsync<IJSObjectReference>("import", "./_content/Valour.Client/Components/Windows/ChannelWindows/ChatWindowComponent.razor.js");
+                if (_disposed)
+                    return;
 
-            await UpdateActiveViewingLeaseStateAsync();
+                _jsService = await _jsModule.InvokeAsync<IJSObjectReference>("init", _thisRef, MessageWrapperEl);
+                if (_disposed)
+                    return;
+
+                // Swipe-left-to-reply for touch devices. The :not() filters keep
+                // inner reply previews and ghost messages from being targets.
+                _touchSlide = new TouchSlide();
+                _touchSlide.SlideAction += OnMessageSwipeReply;
+                await _touchSlide.Initialize(MessageWrapperEl, ".message:not(.reply):not(.ghost)", JsRuntime);
+                if (_disposed)
+                    return;
+
+                // The notification path (TargetMessageId -> LoadAroundMessageAsync)
+                // wants to scroll before _jsService exists; it defers to here.
+                if (_pendingScrollToMessageId is not null)
+                {
+                    var target = _pendingScrollToMessageId.Value;
+                    _pendingScrollToMessageId = null;
+                    await ScrollToMessage(target, highlight: true);
+                }
+                else
+                {
+                    await ScrollToBottom(true);
+                }
+
+                await UpdateActiveViewingLeaseStateAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            catch (JSDisconnectedException)
+            {
+                return;
+            }
         }
 
         if (_pendingReactionEmojiRefresh && !_loading && _reactionSelector is not null)
@@ -730,7 +755,7 @@
         if (after is null || after.Count < 32)
             _isCaughtUp = true;
 
-        ReRender();
+        await ReRender();
 
         // Scroll to the target message and trigger highlight animation.
         // Uses instant scroll so it can't be interrupted by DOM changes.
@@ -780,7 +805,7 @@
         {
             //Console.WriteLine("Removed Queued Message");
             QueuedMessages.Remove(queued);
-            ReRender();
+            _ = ReRender();
         }
     }
 
@@ -790,7 +815,7 @@
         if (error != null) { 
             //Console.WriteLine("Removed error message");
             DisplayedMessages.Remove(error); 
-            ReRender();
+            _ = ReRender();
         }
     }
     
@@ -802,7 +827,7 @@
         _liveArrivalIds.Clear();
         
         if (render)
-            ReRender();
+            _ = ReRender();
     }
     
     public Message GetLastMessage()
@@ -897,7 +922,7 @@
 
         if (render)
         {
-            ReRender();
+            _ = ReRender();
         }
     }
 

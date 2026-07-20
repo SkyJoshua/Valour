@@ -1,4 +1,5 @@
 ﻿using IdGen;
+using Valour.Config.Configs;
 
 /*  Valour (TM) - A free and secure chat client
  *  Copyright (C) 2025 Valour Software LLC
@@ -23,7 +24,12 @@ public static class IdManager
 
         var options = new IdGeneratorOptions(structure, new DefaultTimeSource(epoch));
 
-        Generator = new IdGenerator(0, options);
+        // Worker ids identify cooperating official-cluster instances only.
+        // Community federation nodes do not participate in this 10-bit space:
+        // their local objects are origin-scoped, while globally routed planet
+        // ids are allocated by the hub.
+        var workerId = Math.Clamp(NodeConfig.Instance?.WorkerId ?? 0, 0, 1023);
+        Generator = new IdGenerator(workerId, options);
     }
 
     public static long Generate()

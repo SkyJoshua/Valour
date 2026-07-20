@@ -43,6 +43,26 @@ public class PlanetListInfo : ServerModel<long>, ISharedPlanetListInfo
     /// True if the planet is marked as NSFW
     /// </summary>
     public bool Nsfw { get; set; }
+
+    /// <summary>
+    /// True when this planet stores media on its own infrastructure
+    /// </summary>
+    public bool SelfHostedMedia { get; set; }
+
+    /// <summary>
+    /// True when this planet runs voice/video on its own LiveKit SFU
+    /// </summary>
+    public bool SelfHostedVoice { get; set; }
+
+    /// <summary>
+    /// Community node domain hosting this planet, or null when official.
+    /// </summary>
+    public string NodeDomain { get; set; }
+
+    /// <summary>
+    /// True if the planet is discoverable (shows up in planet discovery)
+    /// </summary>
+    public bool Discoverable { get; set; }
     
     /// <summary>
     /// The number of members in the planet

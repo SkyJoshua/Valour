@@ -144,6 +144,11 @@ else
             {
                 <p class="translated-flag"> (Translated)</p>
             }
+
+            @if (!string.IsNullOrWhiteSpace(_message.ImportSource))
+            {
+                <span class="imported-flag" title="Imported from @_message.ImportSource">Imported</span>
+            }
         </div>
     </div>
     @if (_reactions is not null && _reactions.Count > 0)
@@ -545,7 +550,7 @@ else
         _showAllReactions = show;
         BuildReactionRenderList();
         
-        ReRender();
+        _ = ReRender();
     }
     
     private void OnReactionAdded(MessageReaction reaction)
@@ -583,7 +588,7 @@ else
         _ = AddReactionUserAsync(reaction);
 
         // Re-render the component to show the updated reactions
-        ReRender();
+        _ = ReRender();
     }
     
     private void OnReactionRemoved(MessageReaction reaction)
@@ -615,7 +620,7 @@ else
         _ = RemoveReactionUserAsync(reaction);
 
         // Re-render the component to show the updated reactions
-        ReRender();
+        _ = ReRender();
     }
 
     private async Task OnReactionClick(string emoji)
@@ -881,7 +886,7 @@ else
 
         CalculateClassAndStyles();
 
-        ReRender();
+        await ReRender();
 
         await _chat.OpenEditMode(this);
     }
@@ -897,7 +902,7 @@ else
 
         await _chat.CloseEditMode(cancel);
 
-        ReRender();
+        await ReRender();
     }
 
     public async Task ToggleTranslationAsync()
@@ -945,7 +950,7 @@ else
         _message = message;
         BuildMessage();
 
-        ReRender();
+        _ = ReRender();
     }
 
     public void RefreshMessage()
@@ -989,7 +994,7 @@ else
             _isBuilt = true;
 
             if (render)
-                ReRender();
+                _ = ReRender();
 
             return;
         }
@@ -1005,7 +1010,7 @@ else
         _isBuilt = true;
 
         if (render)
-            ReRender();
+            _ = ReRender();
     }
 
     protected override async Task OnInitializedAsync()
@@ -1033,27 +1038,29 @@ else
 
         Id = $"m-{_message.ChannelId}-{_message.Id}";
 
-        _user = await _message.FetchAuthorUserAsync();
-
-        if (_user != null)
-            _user.Updated += OnUserUpdated;
-        
-        if (!_isInnerReply && !_ghost && _chat is not null)
-        {
-            _chat.AddRenderedMessage(this);
-        }
-
-        // Planet message logic
+        // Planet message logic - resolve the author member first. The member
+        // payload embeds its User, which FetchAuthorMemberAsync caches, so the
+        // FetchAuthorUserAsync below hits that cache instead of issuing a
+        // separate /api/users/{id} request per message author.
         if (_message.PlanetId is not null)
         {
-            
             _member = await _message.FetchAuthorMemberAsync();
-            
+
             // Hook events
             if (_member is not null) // There is a chance they were deleted
             {
                 _member.Updated += OnMemberUpdated;
             }
+        }
+
+        _user = await _message.FetchAuthorUserAsync();
+
+        if (_user != null)
+            _user.Updated += OnUserUpdated;
+
+        if (!_isInnerReply && !_ghost && _chat is not null)
+        {
+            _chat.AddRenderedMessage(this);
         }
 
         _author = _member is not null ? _member : (_user ?? User.NotFound);
@@ -1188,7 +1195,7 @@ else
 
         if (render)
         {
-            ReRender();
+            _ = ReRender();
         }
     }
 
@@ -1223,7 +1230,7 @@ else
 
         if (render)
         {
-            ReRender();
+            _ = ReRender();
         }
     }
     

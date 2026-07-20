@@ -1,4 +1,4 @@
-﻿#nullable  enable
+﻿#nullable enable annotations
 
 using System.Text.RegularExpressions;
 using Valour.Server.Database;
@@ -18,15 +18,17 @@ public class NotificationService
     private readonly PushNotificationWorker _pushNotificationWorker;
     private readonly HostedPlanetService _hostedService;
     private readonly ChannelWatchingService _channelWatchingService;
-    
+    private readonly PlanetPermissionService _permissionService;
+
     public NotificationService(
-        ValourDb db, 
+        ValourDb db,
         CoreHubService coreHub,
         NodeLifecycleService nodeLifecycleService,
-        ILogger<NotificationService> logger, 
-        PushNotificationWorker pushNotificationWorker, 
+        ILogger<NotificationService> logger,
+        PushNotificationWorker pushNotificationWorker,
         HostedPlanetService hostedService,
-        ChannelWatchingService channelWatchingService)
+        ChannelWatchingService channelWatchingService,
+        PlanetPermissionService permissionService)
     {
         _db = db;
         _coreHub = coreHub;
@@ -35,6 +37,7 @@ public class NotificationService
         _pushNotificationWorker = pushNotificationWorker;
         _hostedService = hostedService;
         _channelWatchingService = channelWatchingService;
+        _permissionService = permissionService;
     }
     
     public async Task<Models.Notification> GetNotificationAsync(Guid id)
@@ -173,12 +176,22 @@ public class NotificationService
 
         baseNotification.Body ??= "";
 
-        var userIds = await _db.PlanetMembers
+        var membersWithRole = await _db.PlanetMembers
             .AsNoTracking()
             .WithRoleByLocalIndex(hostedPlanet.Planet.Id,  role.FlagBitIndex)
-            .Select(x => x.UserId)
-            .Distinct()
+            .Select(x => new { x.Id, x.UserId })
             .ToArrayAsync();
+
+        // Only notify members who can actually view the channel (#1570)
+        var allowedUserIds = new HashSet<long>();
+        foreach (var memberWithRole in membersWithRole)
+        {
+            if (baseNotification.ChannelId is null ||
+                await _permissionService.HasChannelAccessAsync(memberWithRole.Id, baseNotification.ChannelId.Value))
+                allowedUserIds.Add(memberWithRole.UserId);
+        }
+
+        var userIds = allowedUserIds.ToArray();
 
         if (userIds.Length == 0)
             return;
@@ -401,10 +414,10 @@ public class NotificationService
     }
 
     public Task HandleMentionAsync(
-        Mention mention, 
-        ISharedPlanet planet, 
-        ISharedMessage message, 
-        ISharedPlanetMember member, 
+        Mention mention,
+        ISharedPlanet? planet,
+        ISharedMessage message,
+        ISharedPlanetMember? member,
         ISharedUser user, 
         ISharedChannel channel)
     {
@@ -522,9 +535,9 @@ public class NotificationService
 
     private async Task HandleMemberMentionAsync(
         Mention mention,
-        ISharedPlanet planet,
+        ISharedPlanet? planet,
         ISharedMessage message,
-        ISharedPlanetMember member,
+        ISharedPlanetMember? member,
         ISharedUser user,
         ISharedChannel channel
     )
@@ -537,9 +550,21 @@ public class NotificationService
         if (targetMember is null)
             return;
 
+        // The mention must target a member of the planet the message was posted in
+        if (targetMember.PlanetId != planet.Id)
+            return;
+
+        // Don't notify members who cannot view the channel (#1570)
+        if (!await _permissionService.HasChannelAccessAsync(targetMember.Id, channel.Id))
+            return;
+
         var content = await ReplaceMentionTagsAsync(message.Content);
 
-        var senderName = string.IsNullOrWhiteSpace(member.Nickname) ? user.Name : member.Nickname;
+        // System-originated messages (for example Automod responses authored
+        // by Victor) intentionally have no PlanetMember. They may still
+        // mention a member, so do not let notification formatting abort the
+        // message post before it reaches the queue.
+        var senderName = string.IsNullOrWhiteSpace(member?.Nickname) ? user.Name : member.Nickname;
         var title = user.Id == ISharedUser.VictorUserId
             ? "Victor in " + planet.Name
             : senderName + " in " + planet.Name;
@@ -564,9 +589,9 @@ public class NotificationService
 
     private async Task HandleRoleMentionAsync(
         Mention mention,
-        ISharedPlanet planet,
+        ISharedPlanet? planet,
         ISharedMessage message,
-        ISharedPlanetMember member,
+        ISharedPlanetMember? member,
         ISharedUser user,
         ISharedChannel channel
     )
@@ -582,7 +607,7 @@ public class NotificationService
         var content = await ReplaceMentionTagsAsync(message.Content);
         var mentionSource = GetRoleMentionSource(targetRole);
 
-        var roleSenderName = string.IsNullOrWhiteSpace(member.Nickname) ? user.Name : member.Nickname;
+        var roleSenderName = string.IsNullOrWhiteSpace(member?.Nickname) ? user.Name : member.Nickname;
         var baseNotification = new Notification()
         {
             Id = Guid.NewGuid(),

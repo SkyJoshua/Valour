@@ -10,11 +10,12 @@
     <PackageTags>Valour, SDK, API, Messaging, Bots</PackageTags>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageIcon>logo.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <ImplicitUsings>true</ImplicitUsings>
     <DebugType>portable</DebugType>
-    <Version>0.6.8</Version>
+    <Version>0.7.3</Version>
     <RootNamespace>Valour.Sdk</RootNamespace>
-    <Nullable>disable</Nullable>
+    <Nullable>annotations</Nullable>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -28,11 +29,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.ObjectPool" Version="10.0.2" />
-    <PackageReference Include="Valour.TenorTwo" Version="1.0.2" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="logo.png" Pack="true" PackagePath="" />
+    <None Update="README.md" Pack="true" PackagePath="" />
     <ProjectReference Include="..\Shared\Valour.Shared.csproj" />
   </ItemGroup>
 

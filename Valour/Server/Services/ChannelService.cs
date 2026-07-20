@@ -1,4 +1,4 @@
-﻿#nullable enable
+﻿#nullable enable annotations
 
 using Valour.Server.Database;
 using Valour.Shared;
@@ -121,39 +121,59 @@ public class ChannelService
     /// </summary>
     public async ValueTask<Channel?> GetDirectChannelByUsersAsync(long userOneId, long userTwoId, bool create = true)
     {
-        var channel = await _db.Channels
+        var isSelf = userOneId == userTwoId;
+
+        var query = _db.Channels
             .AsNoTracking()
             .Include(x => x.Members)
-            .Where(x => x.ChannelType == ChannelTypeEnum.DirectChat)
-            .Where(x => x.Members.Any(m => m.UserId == userOneId) &&
-                        x.Members.Any(m => m.UserId == userTwoId))
-            .FirstOrDefaultAsync();
+            .Where(x => x.ChannelType == ChannelTypeEnum.DirectChat);
+
+        if (isSelf)
+        {
+            // A self-DM is the channel whose only member is this user. Checking both
+            // ids with Any() would match every DM the user is in.
+            query = query.Where(x => x.Members.Any() &&
+                                     x.Members.All(m => m.UserId == userOneId));
+        }
+        else
+        {
+            query = query.Where(x => x.Members.Any(m => m.UserId == userOneId) &&
+                                     x.Members.Any(m => m.UserId == userTwoId));
+        }
+
+        var channel = await query.FirstOrDefaultAsync();
 
         // If there is no channel and we have this set to create it if missing...
         if (channel is null && create)
         {
             var newId = IdManager.Generate();
-            
+
+            // A self-DM gets a single member row; a normal DM gets one per user
+            var members = new List<Valour.Database.ChannelMember>
+            {
+                new()
+                {
+                    Id = IdManager.Generate(),
+                    ChannelId = newId,
+                    UserId = userOneId
+                }
+            };
+
+            if (!isSelf)
+            {
+                members.Add(new()
+                {
+                    Id = IdManager.Generate(),
+                    ChannelId = newId,
+                    UserId = userTwoId
+                });
+            }
+
             // Create channel
             channel = new Valour.Database.Channel()
             {
                 Id = newId,
-
-                // Build the members
-                Members = [
-                    new()
-                    {
-                        Id = IdManager.Generate(),
-                        ChannelId = newId,
-                        UserId = userOneId
-                    },
-                    new()
-                    {
-                        Id = IdManager.Generate(),
-                        ChannelId = newId,
-                        UserId = userTwoId
-                    }
-                ],
+                Members = members,
 
                 Name = "Direct Chat",
                 Description = "A private discussion",
@@ -260,6 +280,8 @@ public class ChannelService
     public async Task<TaskResult> DeletePlanetChannelAsync(long planetId, long channelId)
     {
         var hostedPlanet = await _hostedPlanetService.GetRequiredAsync(planetId);
+        if (hostedPlanet.Planet.LockedForMigration)
+            return TaskResult.FromFailure(MigrationLock.Message);
 
         var isAssociatedChat = await _db.Channels
             .AnyAsync(x => x.AssociatedChatChannelId == channelId && !x.IsDeleted);
@@ -324,7 +346,7 @@ public class ChannelService
     /// <summary>
     /// Creates the given channel
     /// </summary>
-    public async Task<TaskResult<Channel>> CreateAsync(Channel channel, List<PermissionsNode> nodes = null)
+    public async Task<TaskResult<Channel>> CreateAsync(Channel channel, List<PermissionsNode>? nodes = null)
     {
         var baseValid = await ValidateChannel(channel);
         if (!baseValid.Success)
@@ -344,6 +366,8 @@ public class ChannelService
         if (channel.PlanetId is not null)
         {
             hostedPlanet = await _hostedPlanetService.GetRequiredAsync(channel.PlanetId.Value);
+            if (hostedPlanet.Planet.LockedForMigration)
+                return new TaskResult<Channel>(false, MigrationLock.Message);
             
             // Handle bundled permissions
             if (nodes is not null && nodes.Count > 0)
@@ -494,6 +518,12 @@ public class ChannelService
         if (old.AssociatedChatChannelId != updated.AssociatedChatChannelId)
             return TaskResult<Channel>.FromFailure("Cannot change AssociatedChatChannelId.");
 
+        // SetPrimaryChannelAsync maintains the single-default invariant; a raw
+        // update must not flip the flag (could leave a planet with no default,
+        // or two defaults)
+        if (old.IsDefault != updated.IsDefault)
+            return TaskResult<Channel>.FromFailure("Use the set primary channel endpoint to change the default channel.");
+
         // Channel parent is being changed
         if (old.ParentId != updated.ParentId)
         {
@@ -514,6 +544,8 @@ public class ChannelService
         if (updated.PlanetId is not null)
         {
             hostedPlanet = await _hostedPlanetService.GetRequiredAsync(updated.PlanetId.Value);
+            if (hostedPlanet.Planet.LockedForMigration)
+                return new TaskResult<Channel>(false, MigrationLock.Message);
         }
 
         var trans = await _db.Database.BeginTransactionAsync();
@@ -1303,7 +1335,7 @@ public class ChannelService
             
             _coreHub.NotifyChannelsMoved(eventData);
         }
-        catch (Exception e)
+        catch (Exception)
         {
             await trans.RollbackAsync();
             return TaskResult.FromFailure("An unexpected error occured.");

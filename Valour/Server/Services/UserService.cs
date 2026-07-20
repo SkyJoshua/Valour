@@ -10,6 +10,7 @@ using Valour.Shared.Queries;
 using Microsoft.EntityFrameworkCore.Storage;
 using AuthToken = Valour.Server.Models.AuthToken;
 using EmailConfirmCode = Valour.Server.Models.EmailConfirmCode;
+using GifFavorite = Valour.Server.Models.GifFavorite;
 using PasswordRecovery = Valour.Server.Models.PasswordRecovery;
 using Planet = Valour.Server.Models.Planet;
 using TenorFavorite = Valour.Server.Models.TenorFavorite;
@@ -22,6 +23,13 @@ namespace Valour.Server.Services;
 
 public class UserService
 {
+    /// <summary>
+    /// Set on <see cref="TaskResult{T}.Code"/> by <see cref="ValidateCredentialAsync"/> when the
+    /// credentials were correct but the account is disabled. Lets callers distinguish a disabled
+    /// account from a bad credential without matching on the human-readable message.
+    /// </summary>
+    public const int AccountDisabledCode = 1001;
+
     private const int EmailTimeoutSeconds = 20;
     private static readonly TimeSpan PasswordRecoveryCodeLifetime = TimeSpan.FromMinutes(10);
 
@@ -71,6 +79,10 @@ public class UserService
     /// </summary>
     public async Task<User> GetAsync(long id) =>
         (await _db.Users.FindAsync(id)).ToModel();
+
+    /// <summary>Whether this id belongs to a hub-backed federation shadow user.</summary>
+    public async Task<bool> IsFederatedAsync(long id) =>
+        await _db.Users.AsNoTracking().Where(x => x.Id == id).Select(x => x.IsFederated).FirstOrDefaultAsync();
 
     /// <summary>
     /// Queries users by the given attributes and returns the results
@@ -169,7 +181,14 @@ public class UserService
     public async Task<List<Planet>> GetJoinedPlanetInfo(long userId)
     {
         var planetEntities = await _db.PlanetMembers
-            .Where(x => x.UserId == userId)
+            // A completed federation handoff keeps a locked official recovery
+            // copy until the owner finalizes deletion. Do not render that copy
+            // alongside the community-hosted planet; the corresponding
+            // FederatedMembership is loaded by the client instead.
+            .Where(x => x.UserId == userId &&
+                        !_db.FederatedMigrations.Any(m =>
+                            m.PlanetId == x.PlanetId &&
+                            m.Status == FederatedMigrationStatus.Completed))
             .Include(x => x.Planet)
             .ThenInclude(p => p.Tags) 
             .Select(x => x.Planet)
@@ -199,6 +218,9 @@ public class UserService
 
     public async Task<List<TenorFavorite>> GetTenorFavoritesAsync(long userId) =>
         await _db.TenorFavorites.Where(x => x.UserId == userId).Select(x => x.ToModel()).ToListAsync();
+
+    public async Task<List<GifFavorite>> GetGifFavoritesAsync(long userId) =>
+        await _db.GifFavorites.Where(x => x.UserId == userId).Select(x => x.ToModel()).ToListAsync();
 
     public async Task<(List<User> outgoing, List<User> incoming)> GetFriendsDataAsync(long userId)
     {
@@ -397,14 +419,13 @@ public class UserService
     /// <returns></returns>
     public async Task<User> GetByNameAndTagAsync(string username)
     {
-        var split = username.Split('#');
-        if (split.Length < 2)
+        // Names may themselves contain '#', tags never do, so split at the last '#'
+        if (!UserUtils.TrySplitNameAndTag(username, out var name, out var tag))
         {
             return null;
         }
-        
-        // Users are searched by lowercase name, but the tags are uppercase
-        return await GetUserAsync(split[0], split[1]);
+
+        return await GetUserAsync(name, tag);
     }
     
     public async Task<TaskResult<User>> UpdateAsync(User updatedUser)
@@ -415,6 +436,7 @@ public class UserService
 
         old.Status = updatedUser.Status;
         old.UserStateCode = updatedUser.UserStateCode;
+        old.HidePriorName = updatedUser.HidePriorName;
 
         // Validate and copy star colors
         if (updatedUser.StarColor1 != old.StarColor1 || updatedUser.StarColor2 != old.StarColor2)
@@ -558,6 +580,7 @@ public class UserService
 
             // Evict after commit to avoid re-cache race
             _tokenService.RemoveFromQuickCache(tokenId);
+            _coreHub.ForceLogoutToken(tokenId);
 
             return new TaskResult(true, "Token revoked successfully");
         }
@@ -586,6 +609,7 @@ public class UserService
             foreach (var token in tokens)
             {
                 _tokenService.RemoveFromQuickCache(token.Id);
+                _coreHub.ForceLogoutToken(token.Id);
             }
 
             return new TaskResult(true, $"Revoked {tokens.Count} tokens");
@@ -699,7 +723,7 @@ public class UserService
 
         if (user.Disabled)
         {
-            return new TaskResult<User>(false, "This account has been disabled", null);
+            return new TaskResult<User>(false, "This account has been disabled", null, code: AccountDisabledCode);
         }
 
         return new TaskResult<User>(true, "Succeeded", user);
@@ -1164,6 +1188,9 @@ public class UserService
             var tenorFavorites = _db.TenorFavorites.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
             _db.TenorFavorites.RemoveRange(tenorFavorites);
 
+            var gifFavorites = _db.GifFavorites.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
+            _db.GifFavorites.RemoveRange(gifFavorites);
+
             await _db.SaveChangesAsync();
             
             // Remove eco stuff
@@ -1272,9 +1299,55 @@ public class UserService
 
             await _db.SaveChangesAsync();
 
+            // Record a targeted deletion tombstone for every community node the
+            // account joined BEFORE removing relationship rows. This is in the
+            // same database transaction as deletion, so the node list cannot be
+            // lost in a crash and unrelated nodes never learn the account id.
+            var federationNodeDomains = await _db.FederatedMemberships
+                .Where(x => x.UserId == dbUser.Id)
+                .Select(x => x.NodeDomain)
+                .Distinct()
+                .ToListAsync();
+            var outstandingInviteDomains = await _db.FederatedInviteGrants
+                .Where(x => x.IntendedUserId == dbUser.Id)
+                .Select(x => x.NodeDomain)
+                .Distinct()
+                .ToListAsync();
+            federationNodeDomains = federationNodeDomains
+                .Concat(outstandingInviteDomains)
+                .Distinct()
+                .ToList();
+            if (Valour.Config.Configs.FederationConfig.Current?.HubEnabled == true)
+            {
+                var createdAt = DateTime.UtcNow;
+                foreach (var nodeDomain in federationNodeDomains)
+                {
+                    _db.FederatedPurges.Add(new Valour.Database.FederatedPurge
+                    {
+                        Id = Valour.Server.Database.IdManager.Generate(),
+                        SubjectUserId = dbUser.Id,
+                        NodeDomain = nodeDomain,
+                        CreatedAt = createdAt,
+                    });
+                }
+            }
+
+            // Remove the user's hub-side federation relationship records too, so a
+            // deletion doesn't leave their accepted-domain and cross-node
+            // membership data behind. (Empty/no-op on non-hub instances.)
+            _db.FederatedAcceptedDomains.RemoveRange(
+                _db.FederatedAcceptedDomains.Where(x => x.UserId == dbUser.Id));
+            _db.FederatedMemberships.RemoveRange(
+                _db.FederatedMemberships.Where(x => x.UserId == dbUser.Id));
+            _db.FederatedInviteRedemptions.RemoveRange(
+                _db.FederatedInviteRedemptions.Where(x => x.UserId == dbUser.Id));
+            _db.FederatedInviteGrants.RemoveRange(
+                _db.FederatedInviteGrants.Where(x => x.IntendedUserId == dbUser.Id || x.CreatorUserId == dbUser.Id));
+            await _db.SaveChangesAsync();
+
             _db.Users.Remove(dbUser);
             await _db.SaveChangesAsync();
-        
+
             await tran.CommitAsync();
             _logger.LogInformation("Hard deleted user {UserName} ({UserId})", dbUser.Name, dbUser.Id);
 

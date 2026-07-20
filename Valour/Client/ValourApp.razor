@@ -49,7 +49,7 @@ else
 }
 
 @code{
-    const bool USE_PROD = false;
+    private static readonly bool UseProd = false;
 
     private bool _triedInitialLogin;
     private bool _needsErrorReportingCheck;
@@ -62,11 +62,26 @@ else
         Logger.AddColorLogger(Log);
         await DevicePreferences.LoadPreferences(LocalStorage);
         Logger.Log("App", "Loaded user preferences", "magenta");
+        Client.AuthService.LoggedOut += OnTokenInvalidatedAsync;
+    }
+
+    private Task OnTokenInvalidatedAsync(string reason)
+    {
+        // LoggedOut can be raised from a SignalR callback thread, so marshal the
+        // storage writes and JS interop onto the renderer's dispatcher.
+        return InvokeAsync(async () =>
+        {
+            await LocalStorage.RemoveAsync("token");
+            await LocalStorage.SetStringAsync("logout-reason", reason ?? "expired");
+            await JsRuntime.InvokeVoidAsync("location.reload");
+        });
     }
 
     // Runs when page is initialized
     private async Task ReadyAsync()
     {
+        await DevicePreferences.ApplyForceGpuAccelerationAsync(JsRuntime);
+
         var uriData = await BrowserUtils.GetUriData();
         Logger.Log("App", $"Origin is {uriData.Origin}", "magenta");
 
@@ -79,6 +94,17 @@ else
         catch
         {
             // Host page does not expose a threads origin override.
+        }
+
+        try
+        {
+            Client.ConfigureKlipy(await JsRuntime.InvokeAsync<string>("getKlipyApiKey"));
+        }
+        catch
+        {
+            // Klipy is optional and may be disabled by deployments that do not
+            // expose a public platform key in their runtime configuration.
+            Client.ConfigureKlipy(null);
         }
 
         var hostMode = "web";
@@ -97,7 +123,7 @@ else
 
         if (hostMode != "hybrid" && !isFallbackNativeLoopbackOrigin)
         {
-            if (!USE_PROD)
+            if (!UseProd)
             {
                 var apiOrigin = uriData.Origin;
                 try
@@ -126,6 +152,13 @@ else
         {
             Logger.Log("App", $"Using native/default API origin (hostMode={hostMode}, hostname={uriData.Hostname})", "magenta");
         }
+
+        // Learn this instance's hosts and capabilities. Applies configured
+        // domains to link building, CDN URLs, and route parsing; the UI uses
+        // the capability map to hide unavailable features.
+        var manifest = await Client.FetchInstanceManifestAsync();
+        if (manifest is not null)
+            Logger.Log("App", $"Connected to instance '{manifest.Name}' v{manifest.Version}", "magenta");
 
         _ = JsRuntime.InvokeAsync<object>(
             "blazorFuncs.registerClient",
@@ -263,6 +296,8 @@ else
 
             var prefs = response.Data;
             SoundManager.SetNotificationVolume(prefs.NotificationVolume);
+            await DevicePreferences.SetForceGpuAccelerationEnabled(prefs.ForceGpuAcceleration, LocalStorage);
+            await DevicePreferences.ApplyForceGpuAccelerationAsync(JsRuntime);
 
             if (prefs.ErrorReportingState == ErrorReportingState.All)
             {

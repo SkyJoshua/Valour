@@ -53,6 +53,17 @@ public class MessageAttachment : ISharedMessageAttachment
     /// </summary>
     public OpenGraphData OpenGraph { get; set; }
 
+    /// <summary>
+    /// True when the file lives on the planet's own storage
+    /// (bring-your-own-S3) rather than Valour's CDN.
+    /// </summary>
+    public bool PlanetHosted { get; set; }
+
+    /// <summary>
+    /// Client-computed SHA-256 (hex) of the uploaded bytes, planet-hosted only.
+    /// </summary>
+    public string ReportedSha256 { get; set; }
+
     public MessageAttachment()
     {
     }
@@ -187,19 +198,16 @@ public class MessageAttachment : ISharedMessageAttachment
         
         var location = Location;
 
-        var uri = new Uri(location);
-
-        var host = uri.Host;
-        if (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
-            host = host[4..];
-
-        if (CdnUtils.MediaBypassList.Contains(host))
+        if (location.StartsWith("https://media.tenor.com", StringComparison.OrdinalIgnoreCase) ||
+            KlipyMediaUrls.IsAllowed(location))
         {
-            // Known-good external media sources (GIF providers, YouTube, etc.) bypass
-            // the Valour CDN entirely, so we don't need to fetch a signed URL for them.
+            // Provider-hosted GIFs are directly loadable and do not require a
+            // Valour CDN signed URL. The Tenor branch remains for old messages.
             return location;
         }
-        
+
+        var uri = new Uri(location);
+
         // Strip the protocol and host from the location
         // This is because the CDN will return a signed URL that is relative to the base URL of the client
         location = uri.PathAndQuery.TrimStart('/');
@@ -238,4 +246,3 @@ public class MessageAttachment : ISharedMessageAttachment
                location.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
     }
 }
-

@@ -1,0 +1,38 @@
+@page "/D/{PlanetId:long}"
+
+@inject ValourClient Client
+@inject PlanetService PlanetService
+
+<PlanetJoinLanding Result="@_planetInfoResult"
+                   JoinAsync="@JoinAsync"
+                   LoginReturnPath="@($"/D/{PlanetId}")"
+                   RegisterUrl="/register" />
+
+@code {
+
+    [Parameter]
+    public long PlanetId { get; set; }
+
+    private TaskResult<PlanetListInfo>? _planetInfoResult;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var planetInfoTask = PlanetService.FetchPlanetInfoAsync(PlanetId);
+        var joinedPlanetsTask = Client.IsLoggedIn ? PlanetService.FetchJoinedPlanetsAsync() : Task.CompletedTask;
+        await joinedPlanetsTask;
+        _planetInfoResult = await planetInfoTask;
+
+        // This page is only meant to be reachable via a discoverable planet's
+        // link. A planet that's public but not discoverable should look like
+        // it doesn't exist here, the same as a private or missing planet.
+        if (_planetInfoResult.Value.Success &&
+            _planetInfoResult.Value.Data is not null &&
+            !_planetInfoResult.Value.Data.Discoverable)
+        {
+            _planetInfoResult = TaskResult<PlanetListInfo>.FromFailure("Planet not found or not public");
+        }
+    }
+
+    private Task<TaskResult<PlanetMember>> JoinAsync(long planetId) =>
+        PlanetService.JoinPlanetAsync(planetId);
+}

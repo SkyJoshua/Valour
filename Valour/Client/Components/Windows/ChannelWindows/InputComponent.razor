@@ -1,14 +1,13 @@
 @inject IJSRuntime JsRuntime
 @implements IAsyncDisposable
 @inject ValourClient Client
+@inject Valour.Client.Storage.IAppStorage BrowserStorage
 
 @using System.Net.Http.Headers
 @using System.Text.RegularExpressions
 @using Valour.Client.Emojis
 @using Valour.Shared.Cdn
 @using Valour.Shared.Models
-@using Valour.TenorTwo.Models
-@using Media = Valour.TenorTwo.Models.Media
 
 <InputFile id="@DropUploadInputId" @ref="_inputFileRef" style="width: 0; height: 0; display: none;" onclick="this.value='';" OnChange="@LoadFiles"></InputFile>
 
@@ -39,12 +38,12 @@
     }
 
     <div class="upload-menu" style="@UploadMenuStyle" @onclick:stopPropagation="true">
-        <div class="content tenor">
+        <div class="content klipy">
             <button type="button" class="button" @ref="_uploadMenuFileButton">
                 <img class="menu-icon" src="_content/Valour.Client/media/Paperclip-Icon.svg" alt="" />
                 <span>Upload</span>
             </button>
-            <button type="button" class="button tenor" @onclick="@ShowTenorMenu">
+            <button type="button" class="button klipy" @onclick="@ShowKlipyMenu" disabled="@(!Client.KlipyService.IsConfigured)" title="@(Client.KlipyService.IsConfigured ? "Search GIFs" : "GIF search is not configured")">
                 <img class="menu-icon" src="_content/Valour.Client/media/Gif-Icon.svg" alt="" />
                 <span>Gifs</span>
             </button>
@@ -57,7 +56,7 @@
     </div>
     
     <div style="position: relative">
-        <TenorMenuComponent @key="@("tenor-menu-" + ChatComponent.WindowCtx.Id)" @ref="TenorMenu" ChannelWindow="ChatComponent"></TenorMenuComponent>
+        <KlipyMenuComponent @key="@("klipy-menu-" + ChatComponent.WindowCtx.Id)" @ref="KlipyMenu" ChannelWindow="ChatComponent"></KlipyMenuComponent>
     </div>
     <MentionSelectComponent @ref="MentionSelector" ChannelComponent="@ChatComponent"></MentionSelectComponent>
     
@@ -120,9 +119,9 @@
     private string UploadMenuStyle => _isUploadMenuOpen ? string.Empty : "display: none;";
 
     /// <summary>
-    /// The tenor menu component
+    /// The Klipy GIF menu component
     /// </summary>
-    private TenorMenuComponent TenorMenu { get; set; }
+    private KlipyMenuComponent KlipyMenu { get; set; }
 
     /// <summary>
     /// A reference to the inner input component
@@ -268,10 +267,13 @@
         ModalRoot.OpenModal<EcoPayModal>(data);
     }
 
-    public async Task ShowTenorMenu()
+    public async Task ShowKlipyMenu()
     {
+        if (!Client.KlipyService.IsConfigured)
+            return;
+
         HideUploadMenu();
-        await TenorMenu.Show();
+        await KlipyMenu.Show();
     }
 
     private Task ToggleUploadMenu()
@@ -604,6 +606,21 @@
         var uploadUrl = Client.BaseAddress + $"upload/{path}";
         var authToken = Client.AuthService.Token;
 
+        // Bring-your-own-storage: uploads go directly to the planet owner's
+        // bucket, so Valour never sees the bytes. Metadata stripping must
+        // therefore happen here, client-side, before anything leaves the device.
+        var storagePlanet = ChatComponent?.Channel?.Planet;
+        var usePlanetStorage = storagePlanet is not null && storagePlanet.SelfHostedMedia;
+
+        if (usePlanetStorage)
+        {
+            if (!await EnsurePlanetMediaConsentAsync(storagePlanet))
+                return;
+
+            if (mime is "image/jpeg" or "image/jpg")
+                bytes = JpegMetadataStripper.Strip(bytes);
+        }
+
         var modalData = new FileUploadComponent.ModalParams()
         {
             Bytes = bytes,
@@ -643,9 +660,75 @@
             }
         };
         
-        Console.WriteLine($"[Upload] Opening FileUploadComponent modal, bytes={bytes.Length}, url={uploadUrl}");
+        if (usePlanetStorage)
+        {
+            var grantChannelId = ChatComponent.Channel.Id;
+            modalData.CustomUploader = async (uploadSvc, uploadBytes, onProgress, ct) =>
+            {
+                var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(uploadBytes)).ToLowerInvariant();
+
+                var grantResult = await storagePlanet.CreateMediaUploadGrantAsync(new PlanetMediaUploadRequest
+                {
+                    ChannelId = grantChannelId,
+                    FileName = name,
+                    MimeType = mime,
+                    SizeBytes = uploadBytes.Length,
+                    Sha256 = sha,
+                });
+
+                if (!grantResult.Success || grantResult.Data is null)
+                    return new UploadResult(false, null, grantResult.Message);
+
+                var putResult = await uploadSvc.UploadPutAsync(
+                    grantResult.Data.UploadUrl, uploadBytes, grantResult.Data.ContentType, onProgress, ct);
+
+                if (!putResult.Success)
+                    return putResult;
+
+                newAttachment.PlanetHosted = true;
+                newAttachment.ReportedSha256 = sha;
+                return new UploadResult(true, grantResult.Data.PublicUrl, null);
+            };
+        }
+
+        Console.WriteLine($"[Upload] Opening FileUploadComponent modal, bytes={bytes.Length}, url={uploadUrl}, planetStorage={usePlanetStorage}");
         ModalRoot.OpenModal<FileUploadComponent>(modalData);
         Console.WriteLine($"[Upload] Modal open called");
+    }
+
+    /// <summary>
+    /// One-time (per device, per planet) warning before uploading to a planet
+    /// that stores media on its own infrastructure. Returns true to proceed.
+    /// </summary>
+    private async Task<bool> EnsurePlanetMediaConsentAsync(Planet planet)
+    {
+        var storageKey = $"planet-media-consent-{planet.Id}";
+        var existing = await BrowserStorage.GetStringAsync(storageKey);
+        if (existing == "1")
+            return true;
+
+        var tcs = new TaskCompletionSource<bool>();
+
+        ModalRoot.OpenModal<ConfirmModalComponent>(new ConfirmModalComponent.ModalParams(
+            "This planet hosts its own media",
+            $"Files you upload in {planet.Name} are stored on infrastructure controlled by the planet's owner — not by Valour. " +
+            "Valour never receives a copy, cannot scan it, and cannot recover or delete it for you. " +
+            "Your IP address is visible to the planet's media host when uploading and viewing.",
+            "Upload anyway",
+            "Cancel",
+            async () =>
+            {
+                await BrowserStorage.SetStringAsync(storageKey, "1");
+                tcs.TrySetResult(true);
+            },
+            () =>
+            {
+                tcs.TrySetResult(false);
+                return Task.CompletedTask;
+            }
+        ));
+
+        return await tcs.Task;
     }
 
     public void RemoveAttachment(int id)
@@ -674,66 +757,25 @@
     {
         var attachment = new MessageAttachment(MessageAttachmentType.ValourReceipt)
         {
-            Location = $"https://app.valour.gg/api/eco/transactions/{transactionId}",
+            Location = $"{ClientHosts.AppBaseUrl}/api/eco/transactions/{transactionId}",
         };
 
         AddMessageAttachment(attachment);
     }
     
-    public async Task AddTenor(Media media)
+    public void AddKlipy(KlipyGif gif)
     {
-        var format = media.GetFormat(MediaFormatType.gif);
+        var format = gif.Gif;
         if (format is null)
             return;
 
-        var fileName = $"{media.Title}.gif";
-
-        // The server only accepts attachments hosted on a small allow-list of known hosts
-        // (see MediaUriHelper.IsAllowedLocation) and the GIF provider isn't on it, so the
-        // GIF bytes get downloaded and re-uploaded through Valour's own CDN, the same way
-        // a normal file attachment would be.
-        byte[] bytes;
-        try
-        {
-            bytes = await Client.TenorService.GetHttpClient().GetByteArrayAsync(format.Url);
-        }
-        catch (Exception ex)
-        {
-            Client.Logger.Log<InputComponent>($"Failed to download GIF: {ex.Message}", "red");
-            ModalRoot.OpenModal<InfoModalComponent>(
-                new InfoModalComponent.ModalParams(
-                    "GIF failed to add",
-                    "We couldn't download that GIF. Please try another one.",
-                    "Okay",
-                    null));
-            return;
-        }
-
-        var content = new MultipartFormDataContent();
-        var byteContent = new ByteArrayContent(bytes);
-        byteContent.Headers.ContentType = new MediaTypeHeaderValue("image/gif");
-        content.Add(byteContent, fileName, fileName);
-
-        var result = await Client.PrimaryNode.PostMultipartDataWithResponse<string>("upload/image", content);
-        if (!result.Success)
-        {
-            Client.Logger.Log<InputComponent>($"Failed to upload GIF: {result.Message}", "red");
-            ModalRoot.OpenModal<InfoModalComponent>(
-                new InfoModalComponent.ModalParams(
-                    "GIF failed to add",
-                    result.Message,
-                    "Okay",
-                    null));
-            return;
-        }
-
         AddMessageAttachment(new MessageAttachment(MessageAttachmentType.Image)
         {
-            Location = result.Data,
+            Location = format.Url,
             MimeType = "image/gif",
-            Width = format.Dims[0],
-            Height = format.Dims[1],
-            FileName = fileName
+            Width = format.Width,
+            Height = format.Height,
+            FileName = gif.Title + ".gif"
         });
     }
 
@@ -755,7 +797,7 @@
             var code = match.Groups[1].Value;
             attachments.Add(new MessageAttachment(MessageAttachmentType.ValourInvite)
             {
-                Location = $"https://app.valour.gg/i/{code}",
+                Location = $"{ClientHosts.AppBaseUrl}/i/{code}",
                 Inline = false
             });
         }
@@ -849,7 +891,7 @@
     {
         PreviewMessage.ReplyToId = null;
         PreviewMessageComponent.ParamData.Message.ReplyTo = null;
-        PreviewMessageComponent.ReRender();
+        _ = PreviewMessageComponent.ReRender();
         return Task.CompletedTask;
     }
 
@@ -885,7 +927,7 @@
             
             PreviewMessageComponent.ParamData.Message.ReplyTo = null;
             PreviewMessage.Clear();
-            PreviewMessageComponent.ReRender();
+            await PreviewMessageComponent.ReRender();
             _retainedInputCache.Remove(ChatComponent.Channel.Id, out _);
         }
         // Editing message

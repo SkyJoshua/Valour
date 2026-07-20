@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+using NpgsqlTypes;
 using Valour.Database.Context;
 
 #nullable disable
@@ -22,6 +23,25 @@ namespace Valour.Database.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("Microsoft.AspNetCore.DataProtection.EntityFrameworkCore.DataProtectionKey", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("FriendlyName")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Xml")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("DataProtectionKeys");
+                });
 
             modelBuilder.Entity("Valour.Database.AuthToken", b =>
                 {
@@ -652,6 +672,509 @@ namespace Valour.Database.Migrations
                     b.ToTable("email_confirm_codes");
                 });
 
+            modelBuilder.Entity("Valour.Database.FederatedAcceptedDomain", b =>
+                {
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("Domain")
+                        .HasColumnType("text")
+                        .HasColumnName("domain");
+
+                    b.Property<DateTime>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("accepted_at");
+
+                    b.HasKey("UserId", "Domain");
+
+                    b.ToTable("federated_accepted_domains", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedImportReceipt", b =>
+                {
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("GrantId")
+                        .HasColumnType("text")
+                        .HasColumnName("grant_id");
+
+                    b.Property<long>("OwnerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("SnapshotHash")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("snapshot_hash");
+
+                    b.Property<bool>("SourceDiscoverable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("source_discoverable");
+
+                    b.Property<string>("SourceDomain")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("source_domain");
+
+                    b.Property<bool>("SourcePublic")
+                        .HasColumnType("boolean")
+                        .HasColumnName("source_public");
+
+                    b.HasKey("PlanetId");
+
+                    b.HasIndex("SourceDomain");
+
+                    b.ToTable("federated_import_receipts", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedInviteGrant", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("CreatorUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("creator_user_id");
+
+                    b.Property<DateTime>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<long>("IntendedUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("intended_user_id");
+
+                    b.Property<int>("MaxUses")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_uses");
+
+                    b.Property<string>("NodeDomain")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("node_domain");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime?>("RevokedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<int>("Uses")
+                        .HasColumnType("integer")
+                        .HasColumnName("uses");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IntendedUserId");
+
+                    b.HasIndex("NodeDomain");
+
+                    b.HasIndex("PlanetId");
+
+                    b.ToTable("federated_invite_grants", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedInviteRedemption", b =>
+                {
+                    b.Property<string>("GrantId")
+                        .HasColumnType("text")
+                        .HasColumnName("grant_id");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("Passport")
+                        .HasColumnType("text")
+                        .HasColumnName("passport");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<string>("Proof")
+                        .HasColumnType("text")
+                        .HasColumnName("proof");
+
+                    b.Property<DateTime>("RedeemedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("redeemed_at");
+
+                    b.Property<DateTime?>("RejectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("rejected_at");
+
+                    b.Property<string>("RejectionReason")
+                        .HasColumnType("text")
+                        .HasColumnName("rejection_reason");
+
+                    b.Property<DateTime?>("ReportedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reported_at");
+
+                    b.HasKey("GrantId", "UserId");
+
+                    b.HasIndex("PlanetId");
+
+                    b.HasIndex("ReportedAt");
+
+                    b.ToTable("federated_invite_redemptions", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedMembership", b =>
+                {
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime>("JoinedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("joined_at");
+
+                    b.Property<string>("NodeDomain")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("node_domain");
+
+                    b.HasKey("UserId", "PlanetId");
+
+                    b.HasIndex("NodeDomain");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("federated_memberships", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedMigration", b =>
+                {
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("GrantId")
+                        .HasColumnType("text")
+                        .HasColumnName("grant_id");
+
+                    b.Property<string>("SnapshotHash")
+                        .HasColumnType("text")
+                        .HasColumnName("snapshot_hash");
+
+                    b.Property<DateTime?>("SnapshotServedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("snapshot_served_at");
+
+                    b.Property<bool?>("SourceDiscoverable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("source_discoverable");
+
+                    b.Property<bool?>("SourcePublic")
+                        .HasColumnType("boolean")
+                        .HasColumnName("source_public");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TargetDomain")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("target_domain");
+
+                    b.HasKey("PlanetId");
+
+                    b.ToTable("federated_migrations", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedMigrationHostingApproval", b =>
+                {
+                    b.Property<string>("NodeDomain")
+                        .HasColumnType("text")
+                        .HasColumnName("node_domain");
+
+                    b.Property<long>("OwnerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("owner_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("NodeDomain", "OwnerId", "PlanetId");
+
+                    b.HasIndex("NodeDomain", "OwnerId");
+
+                    b.ToTable("federated_migration_hosting_approvals", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedNode", b =>
+                {
+                    b.Property<string>("Domain")
+                        .HasColumnType("text")
+                        .HasColumnName("domain");
+
+                    b.Property<bool>("AllowsPublicMigrations")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("allows_public_migrations");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("NodePublicJwk")
+                        .HasColumnType("text")
+                        .HasColumnName("node_public_jwk");
+
+                    b.Property<long>("OwnerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("owner_id");
+
+                    b.Property<string>("ReportedVersion")
+                        .HasColumnType("text")
+                        .HasColumnName("reported_version");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<string>("VerificationChallenge")
+                        .HasColumnType("text")
+                        .HasColumnName("verification_challenge");
+
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("Domain");
+
+                    b.HasIndex("OwnerId");
+
+                    b.ToTable("federated_nodes", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedPlanetStub", b =>
+                {
+                    b.Property<long>("Id")
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("Discoverable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("discoverable");
+
+                    b.Property<int>("MemberCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("member_count");
+
+                    b.Property<string>("Name")
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NodeDomain")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("node_domain");
+
+                    b.Property<bool>("Nsfw")
+                        .HasColumnType("boolean")
+                        .HasColumnName("nsfw");
+
+                    b.Property<long>("OwnerId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("owner_id");
+
+                    b.Property<bool>("Public")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("public");
+
+                    b.Property<string>("TrustedUserIdsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("trusted_user_ids_json");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Discoverable");
+
+                    b.HasIndex("NodeDomain");
+
+                    b.ToTable("federated_planet_stubs", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedPurge", b =>
+                {
+                    b.Property<long>("Id")
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("NodeDomain")
+                        .HasColumnType("text")
+                        .HasColumnName("node_domain");
+
+                    b.Property<long>("SubjectUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subject_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("NodeDomain", "Id");
+
+                    b.ToTable("federated_purges", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.FederationKey", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasColumnType("text")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("Active")
+                        .HasColumnType("boolean")
+                        .HasColumnName("active");
+
+                    b.Property<string>("Algorithm")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("algorithm");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("PrivateKeyProtected")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("private_key_protected");
+
+                    b.Property<string>("PublicJwk")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("public_jwk");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("hub")
+                        .HasColumnName("purpose");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("federation_keys", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.GifFavorite", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("GifUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("gif_url");
+
+                    b.Property<int>("Height")
+                        .HasColumnType("integer")
+                        .HasColumnName("height");
+
+                    b.Property<string>("PreviewUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("preview_url");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("provider_id");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("title");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<int>("Width")
+                        .HasColumnType("integer")
+                        .HasColumnName("width");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId", "Provider", "ProviderId")
+                        .IsUnique();
+
+                    b.ToTable("gif_favorites");
+                });
+
             modelBuilder.Entity("Valour.Database.Message", b =>
                 {
                     b.Property<long>("Id")
@@ -680,6 +1203,11 @@ namespace Valour.Database.Migrations
                     b.Property<DateTime?>("EditedTime")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("edit_time");
+
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
 
                     b.Property<long?>("PlanetId")
                         .HasColumnType("bigint")
@@ -757,6 +1285,16 @@ namespace Valour.Database.Migrations
                     b.Property<string>("OpenGraphData")
                         .HasColumnType("text")
                         .HasColumnName("open_graph_data");
+
+                    b.Property<bool>("PlanetHosted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("planet_hosted");
+
+                    b.Property<string>("ReportedSha256")
+                        .HasColumnType("text")
+                        .HasColumnName("reported_sha256");
 
                     b.Property<int>("SortOrder")
                         .HasColumnType("integer")
@@ -838,6 +1376,11 @@ namespace Valour.Database.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("emoji");
+
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
 
                     b.Property<long>("MessageId")
                         .HasColumnType("bigint")
@@ -1139,6 +1682,52 @@ namespace Valour.Database.Migrations
                     b.ToTable("password_recoveries");
                 });
 
+            modelBuilder.Entity("Valour.Database.PendingMfaRemoval", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("ExecuteAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("execute_at");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<long>("StaffUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("staff_user_id");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<long>("TargetUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("target_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TargetUserId");
+
+                    b.HasIndex("Status", "ExecuteAt");
+
+                    b.ToTable("pending_mfa_removals", (string)null);
+                });
+
             modelBuilder.Entity("Valour.Database.PermissionsNode", b =>
                 {
                     b.Property<long>("Id")
@@ -1204,6 +1793,10 @@ namespace Valour.Database.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("enable_threads");
 
+                    b.Property<bool>("EnableWiki")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enable_wiki");
+
                     b.Property<bool>("HasAnimatedIcon")
                         .HasColumnType("boolean")
                         .HasColumnName("animated_icon");
@@ -1219,6 +1812,12 @@ namespace Valour.Database.Migrations
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
+
+                    b.Property<bool>("LockedForMigration")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("locked_for_migration");
 
                     b.Property<string>("Name")
                         .HasColumnType("text")
@@ -1248,11 +1847,36 @@ namespace Valour.Database.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("public_threads");
 
+                    b.Property<bool>("PublicWiki")
+                        .HasColumnType("boolean")
+                        .HasColumnName("public_wiki");
+
+                    b.Property<bool>("SelfHostedMedia")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("self_hosted_media");
+
+                    b.Property<bool>("SelfHostedVoice")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("self_hosted_voice");
+
+                    b.Property<string>("Vanity")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("vanity");
+
                     b.Property<int>("Version")
                         .HasColumnType("integer")
                         .HasColumnName("version");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Vanity")
+                        .IsUnique()
+                        .HasFilter("vanity IS NOT NULL");
 
                     b.ToTable("planets");
                 });
@@ -1665,6 +2289,62 @@ namespace Valour.Database.Migrations
                     b.ToTable("planet_rules", (string)null);
                 });
 
+            modelBuilder.Entity("Valour.Database.PlanetStorageConfig", b =>
+                {
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<string>("AccessKeyEncrypted")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("access_key_encrypted");
+
+                    b.Property<string>("Bucket")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("bucket");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("endpoint");
+
+                    b.Property<string>("PublicBaseUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("public_base_url");
+
+                    b.Property<string>("Region")
+                        .HasColumnType("text")
+                        .HasColumnName("region");
+
+                    b.Property<string>("SecretKeyEncrypted")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("secret_key_encrypted");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("PlanetId");
+
+                    b.ToTable("planet_storage_configs", (string)null);
+                });
+
             modelBuilder.Entity("Valour.Database.PlanetTag", b =>
                 {
                     b.Property<long>("Id")
@@ -1798,6 +2478,11 @@ namespace Valour.Database.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("edited_time");
 
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -1832,6 +2517,202 @@ namespace Valour.Database.Migrations
                     b.HasIndex("PlanetId", "TimeCreated");
 
                     b.ToTable("planet_threads", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetVoiceConfig", b =>
+                {
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<string>("ApiKey")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("api_key");
+
+                    b.Property<string>("ApiSecretEncrypted")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("api_secret_encrypted");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<string>("LiveKitUrl")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("livekit_url");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("PlanetId");
+
+                    b.ToTable("planet_voice_configs", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWikiPage", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Content")
+                        .HasMaxLength(100000)
+                        .HasColumnType("character varying(100000)")
+                        .HasColumnName("content");
+
+                    b.Property<long>("CreatedByUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
+
+                    b.Property<bool>("IsFolder")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_folder");
+
+                    b.Property<bool>("IsPublished")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_published");
+
+                    b.Property<DateTime?>("LastEdited")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_edited");
+
+                    b.Property<long?>("LastEditedByUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_edited_by_user_id");
+
+                    b.Property<long?>("ParentId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("parent_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<long>("Position")
+                        .HasColumnType("bigint")
+                        .HasColumnName("position");
+
+                    b.Property<string>("PreviousSlug")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("previous_slug");
+
+                    b.Property<NpgsqlTsVector>("SearchVector")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("tsvector")
+                        .HasColumnName("search_vector")
+                        .HasAnnotation("Npgsql:TsVectorConfig", "simple")
+                        .HasAnnotation("Npgsql:TsVectorProperties", new[] { "Title", "Content" });
+
+                    b.Property<string>("Slug")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("slug");
+
+                    b.Property<DateTime>("TimeCreated")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("time_created");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("title");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ParentId");
+
+                    b.HasIndex("PlanetId");
+
+                    b.HasIndex("SearchVector");
+
+                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("SearchVector"), "GIN");
+
+                    b.HasIndex("PlanetId", "PreviousSlug")
+                        .HasFilter("previous_slug IS NOT NULL");
+
+                    b.HasIndex("PlanetId", "Slug")
+                        .IsUnique()
+                        .HasFilter("slug IS NOT NULL");
+
+                    b.HasIndex("PlanetId", "ParentId", "Position");
+
+                    b.ToTable("planet_wiki_pages", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWikiRevision", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AuthorUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("author_user_id");
+
+                    b.Property<string>("Content")
+                        .HasMaxLength(100000)
+                        .HasColumnType("character varying(100000)")
+                        .HasColumnName("content");
+
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
+
+                    b.Property<long>("PageId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("page_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime>("TimeCreated")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("time_created");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("title");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PlanetId");
+
+                    b.HasIndex("PageId", "TimeCreated");
+
+                    b.ToTable("planet_wiki_revisions", (string)null);
                 });
 
             modelBuilder.Entity("Valour.Database.PushNotificationSubscription", b =>
@@ -2056,6 +2937,50 @@ namespace Valour.Database.Migrations
                     b.HasIndex("ThreadId");
 
                     b.ToTable("reports", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.StaffAuditLog", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ActionType")
+                        .HasColumnType("integer")
+                        .HasColumnName("action_type");
+
+                    b.Property<string>("Details")
+                        .HasColumnType("text")
+                        .HasColumnName("details");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("text")
+                        .HasColumnName("reason");
+
+                    b.Property<long>("StaffUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("staff_user_id");
+
+                    b.Property<long?>("TargetUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("target_user_id");
+
+                    b.Property<DateTime>("TimeCreated")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("time_created");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StaffUserId");
+
+                    b.HasIndex("TargetUserId");
+
+                    b.HasIndex("TimeCreated");
+
+                    b.ToTable("staff_audit_logs", (string)null);
                 });
 
             modelBuilder.Entity("Valour.Database.StatObject", b =>
@@ -2472,6 +3397,11 @@ namespace Valour.Database.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("edited_time");
 
+                    b.Property<string>("ImportSource")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("import_source");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -2580,6 +3510,18 @@ namespace Valour.Database.Migrations
                     b.Property<bool>("HasCustomAvatar")
                         .HasColumnType("boolean")
                         .HasColumnName("custom_avatar");
+
+                    b.Property<bool>("HidePriorName")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("hide_prior_name");
+
+                    b.Property<bool>("IsFederated")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_federated");
 
                     b.Property<bool>("IsMobile")
                         .HasColumnType("boolean")
@@ -2781,6 +3723,10 @@ namespace Valour.Database.Migrations
                     b.Property<int>("ErrorReportingState")
                         .HasColumnType("integer")
                         .HasColumnName("error_reporting_state");
+
+                    b.Property<bool>("ForceGpuAcceleration")
+                        .HasColumnType("boolean")
+                        .HasColumnName("force_gpu_acceleration");
 
                     b.Property<bool>("MarketingEmailOptOut")
                         .HasColumnType("boolean")
@@ -3084,6 +4030,37 @@ namespace Valour.Database.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Valour.Database.FederatedMigrationHostingApproval", b =>
+                {
+                    b.HasOne("Valour.Database.FederatedNode", null)
+                        .WithMany()
+                        .HasForeignKey("NodeDomain")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedNode", b =>
+                {
+                    b.HasOne("Valour.Database.User", "Owner")
+                        .WithMany()
+                        .HasForeignKey("OwnerId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Owner");
+                });
+
+            modelBuilder.Entity("Valour.Database.FederatedPlanetStub", b =>
+                {
+                    b.HasOne("Valour.Database.FederatedNode", "Node")
+                        .WithMany()
+                        .HasForeignKey("NodeDomain")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Node");
+                });
+
             modelBuilder.Entity("Valour.Database.Message", b =>
                 {
                     b.HasOne("Valour.Database.PlanetMember", "AuthorMember")
@@ -3226,6 +4203,17 @@ namespace Valour.Database.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("Valour.Database.PendingMfaRemoval", b =>
+                {
+                    b.HasOne("Valour.Database.User", "TargetUser")
+                        .WithMany()
+                        .HasForeignKey("TargetUserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("TargetUser");
+                });
+
             modelBuilder.Entity("Valour.Database.PermissionsNode", b =>
                 {
                     b.HasOne("Valour.Database.Planet", "Planet")
@@ -3346,6 +4334,17 @@ namespace Valour.Database.Migrations
                     b.Navigation("Planet");
                 });
 
+            modelBuilder.Entity("Valour.Database.PlanetStorageConfig", b =>
+                {
+                    b.HasOne("Valour.Database.Planet", "Planet")
+                        .WithOne()
+                        .HasForeignKey("Valour.Database.PlanetStorageConfig", "PlanetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Planet");
+                });
+
             modelBuilder.Entity("Valour.Database.PlanetThread", b =>
                 {
                     b.HasOne("Valour.Database.Planet", "Planet")
@@ -3355,6 +4354,46 @@ namespace Valour.Database.Migrations
                         .IsRequired();
 
                     b.Navigation("Planet");
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetVoiceConfig", b =>
+                {
+                    b.HasOne("Valour.Database.Planet", "Planet")
+                        .WithOne()
+                        .HasForeignKey("Valour.Database.PlanetVoiceConfig", "PlanetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Planet");
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWikiPage", b =>
+                {
+                    b.HasOne("Valour.Database.PlanetWikiPage", "Parent")
+                        .WithMany("Children")
+                        .HasForeignKey("ParentId")
+                        .OnDelete(DeleteBehavior.Cascade);
+
+                    b.HasOne("Valour.Database.Planet", "Planet")
+                        .WithMany("WikiPages")
+                        .HasForeignKey("PlanetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Parent");
+
+                    b.Navigation("Planet");
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWikiRevision", b =>
+                {
+                    b.HasOne("Valour.Database.PlanetWikiPage", "Doc")
+                        .WithMany("Revisions")
+                        .HasForeignKey("PageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Doc");
                 });
 
             modelBuilder.Entity("Valour.Database.PushNotificationSubscription", b =>
@@ -3647,6 +4686,8 @@ namespace Valour.Database.Migrations
                     b.Navigation("Threads");
 
                     b.Navigation("UserChannelStates");
+
+                    b.Navigation("WikiPages");
                 });
 
             modelBuilder.Entity("Valour.Database.PlanetMember", b =>
@@ -3674,6 +4715,13 @@ namespace Valour.Database.Migrations
                     b.Navigation("Boosts");
 
                     b.Navigation("Comments");
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWikiPage", b =>
+                {
+                    b.Navigation("Children");
+
+                    b.Navigation("Revisions");
                 });
 
             modelBuilder.Entity("Valour.Database.Themes.Theme", b =>

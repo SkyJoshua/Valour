@@ -8,6 +8,9 @@ public enum ValourRouteType
     PlanetThread,
     PlanetThreadFeed,
     Friends,
+    PlanetWiki,
+    PlanetWikiPage,
+    Invite,
 }
 
 /// <summary>
@@ -21,6 +24,23 @@ public readonly struct ValourRoute
     public long? ChannelId { get; init; }
     public long? ThreadId { get; init; }
     public long? MessageId { get; init; }
+    public long? PageId { get; init; }
+
+    /// <summary>
+    /// Page slug for public docs URLs (the parser cannot resolve slugs to ids)
+    /// </summary>
+    public string? PageSlug { get; init; }
+
+    /// <summary>
+    /// Docs vanity name when the URL identified the planet by vanity rather
+    /// than id. Vanities are never all-digits, so the two never collide.
+    /// </summary>
+    public string? Vanity { get; init; }
+
+    /// <summary>
+    /// Invite code for invite links (/i/{code}).
+    /// </summary>
+    public string? InviteCode { get; init; }
 }
 
 /// <summary>
@@ -30,21 +50,12 @@ public readonly struct ValourRoute
 /// </summary>
 public static class ValourRouteParser
 {
-    private const string ThreadsHost = "threads.valour.gg";
-
-    private static readonly HashSet<string> ValourHosts = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "valour.gg",
-        "www.valour.gg",
-        "app.valour.gg",
-        ThreadsHost,
-    };
-
     /// <summary>
-    /// True if the host belongs to Valour's web app.
+    /// True if the host belongs to this deployment's web app
+    /// (see Hosting.ValourHosts for the configured hosts).
     /// </summary>
     public static bool IsValourHost(string? host) =>
-        !string.IsNullOrWhiteSpace(host) && ValourHosts.Contains(host);
+        !string.IsNullOrWhiteSpace(host) && Hosting.ValourHosts.IsSelfHost(host);
 
     /// <summary>
     /// True if the given value is a Valour app link (an absolute Valour URL or a
@@ -66,13 +77,15 @@ public static class ValourRouteParser
 
         string path;
         var isThreadsHost = false;
+        var isWikiHost = false;
 
         if (Uri.TryCreate(urlOrPath, UriKind.Absolute, out var absolute))
         {
             if (!IsValourHost(absolute.Host))
                 return false;
 
-            isThreadsHost = absolute.Host.Equals(ThreadsHost, StringComparison.OrdinalIgnoreCase);
+            isThreadsHost = absolute.Host.Equals(Hosting.ValourHosts.ThreadsHost, StringComparison.OrdinalIgnoreCase);
+            isWikiHost = absolute.Host.Equals(Hosting.ValourHosts.WikiHost, StringComparison.OrdinalIgnoreCase);
             path = absolute.AbsolutePath;
         }
         else
@@ -110,6 +123,11 @@ public static class ValourRouteParser
             };
             return true;
         }
+
+        // The docs subdomain uses clean URLs without a route prefix:
+        // wiki.valour.gg/{planetIdOrVanity} and wiki.valour.gg/{planetIdOrVanity}/{pageSlug}
+        if (isWikiHost && TryParseWikiSegments(parts, 0, out route))
+            return true;
 
         switch (parts[0].ToLowerInvariant())
         {
@@ -182,11 +200,118 @@ public static class ValourRouteParser
                 }
                 break;
 
+            // /docs/{planetIdOrVanity}/{pageSlug?} (public server-rendered page)
+            case "docs":
+                if (TryParseWikiSegments(parts, 1, out route))
+                    return true;
+                break;
+
+            // /planetwiki/{planetId}/{pageId?} (in-app)
+            case "planetwiki":
+                if (parts.Length >= 2 && long.TryParse(parts[1], out var docsPlanet))
+                {
+                    if (parts.Length >= 3 && long.TryParse(parts[2], out var pageId))
+                    {
+                        route = new ValourRoute
+                        {
+                            Type = ValourRouteType.PlanetWikiPage,
+                            PlanetId = docsPlanet,
+                            PageId = pageId,
+                        };
+                        return true;
+                    }
+
+                    route = new ValourRoute
+                    {
+                        Type = ValourRouteType.PlanetWiki,
+                        PlanetId = docsPlanet,
+                    };
+                    return true;
+                }
+                break;
+
             case "friends":
                 route = new ValourRoute { Type = ValourRouteType.Friends };
                 return true;
+
+            // /i/{code} — planet invite links
+            case "i":
+                if (parts.Length >= 2 && !string.IsNullOrWhiteSpace(parts[1]))
+                {
+                    route = new ValourRoute
+                    {
+                        Type = ValourRouteType.Invite,
+                        InviteCode = parts[1],
+                    };
+                    return true;
+                }
+                break;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Parses public docs URL segments starting at <paramref name="start"/>:
+    /// {planetIdOrVanity} followed by an optional {pageSlug}. Vanity names are
+    /// never all-digits, so a fully numeric first segment is always a planet id.
+    /// </summary>
+    private static bool TryParseWikiSegments(string[] parts, int start, out ValourRoute route)
+    {
+        route = default;
+
+        if (parts.Length <= start)
+            return false;
+
+        var first = parts[start];
+
+        long? planetId = null;
+        string? vanity = null;
+
+        if (long.TryParse(first, out var parsedPlanet))
+            planetId = parsedPlanet;
+        else if (IsWikiNameSegment(first))
+            vanity = first.ToLowerInvariant();
+        else
+            return false;
+
+        if (parts.Length > start + 1 && IsWikiNameSegment(parts[start + 1]))
+        {
+            route = new ValourRoute
+            {
+                Type = ValourRouteType.PlanetWikiPage,
+                PlanetId = planetId,
+                Vanity = vanity,
+                PageSlug = parts[start + 1].ToLowerInvariant(),
+            };
+            return true;
+        }
+
+        route = new ValourRoute
+        {
+            Type = ValourRouteType.PlanetWiki,
+            PlanetId = planetId,
+            Vanity = vanity,
+        };
+        return true;
+    }
+
+    /// <summary>
+    /// True for segments shaped like a docs slug or vanity name (letters,
+    /// digits, dashes). Literal routes like "sitemap.xml" do not match.
+    /// </summary>
+    private static bool IsWikiNameSegment(string segment)
+    {
+        if (string.IsNullOrEmpty(segment) || segment.Length > 64)
+            return false;
+
+        foreach (var c in segment)
+        {
+            var lower = char.ToLowerInvariant(c);
+            if (lower is not ((>= 'a' and <= 'z') or (>= '0' and <= '9') or '-'))
+                return false;
+        }
+
+        return true;
     }
 }

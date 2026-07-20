@@ -112,21 +112,95 @@ public class PlanetService
 
     public async Task<List<PlanetListInfo>> GetDiscoveryPlanetsAsync()
     {
-        return await _db.Planets.AsNoTracking()
+        var official = await _db.Planets.AsNoTracking()
             .Where(x => x.Discoverable && x.Public
                                        && (!x.Nsfw)) // do not allow weirdos in discovery
             .Select(PlanetListInfoSelector)
             .OrderByDescending(x => x.MemberCount)
             .Take(30)
             .ToListAsync();
+
+        var federated = await GetFederatedDiscoveryAsync(30);
+
+        // Official planets rank by their true member count. Federated stubs
+        // rank by hub-verified joins only — never by the node-reported count —
+        // so a node can't inflate its way above legitimate planets. Ties keep
+        // the official planet first (stable sort over the concat order).
+        return official.Select(x => (Info: x, Rank: (long)x.MemberCount))
+            .Concat(federated)
+            .OrderByDescending(x => x.Rank)
+            .Take(30)
+            .Select(x => x.Info)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Discoverable planets hosted on active community nodes (hub mode only).
+    /// Projected into PlanetListInfo with NodeDomain set so the client badges
+    /// them and routes joins to the node. The displayed MemberCount is the
+    /// node's own report, but the returned rank is the count of hub-recorded
+    /// FederatedMemberships — the hub writes those before the node ever sees
+    /// the user, so a lying node can't buy discovery placement.
+    /// </summary>
+    private async Task<List<(PlanetListInfo Info, long Rank)>> GetFederatedDiscoveryAsync(int take)
+    {
+        if (Valour.Config.Configs.FederationConfig.Current?.HubEnabled != true)
+            return new List<(PlanetListInfo, long)>();
+
+        var stubs = await (from stub in _db.FederatedPlanetStubs.AsNoTracking()
+                      join node in _db.FederatedNodes.AsNoTracking() on stub.NodeDomain equals node.Domain
+                      where stub.Public && stub.Discoverable && !stub.Nsfw
+                            && node.Status == Valour.Database.FederatedNodeStatus.Active
+                      let verified = _db.FederatedMemberships.Count(m => m.PlanetId == stub.Id)
+                      orderby verified descending, stub.MemberCount descending
+                      select new
+                      {
+                          Verified = verified,
+                          Info = new PlanetListInfo
+                          {
+                              Id = stub.Id,
+                              PlanetId = stub.Id,
+                              Name = stub.Name,
+                              Description = stub.Description,
+                              MemberCount = stub.MemberCount,
+                              Discoverable = true,
+                              NodeDomain = stub.NodeDomain,
+                          },
+                      }).Take(take).ToListAsync();
+
+        return stubs.Select(x => (x.Info, (long)x.Verified)).ToList();
     }
     
     public async Task<PlanetListInfo> GetPlanetInfoAsync(long planetId)
     {
-        return await _db.Planets.AsNoTracking()
+        var official = await _db.Planets.AsNoTracking()
             .Where(x => x.Id == planetId && x.Public && !x.IsDeleted) // only public planets
             .Select(PlanetListInfoSelector)
             .FirstOrDefaultAsync();
+
+        if (official is not null)
+            return official;
+
+        // Federated planets only have a small hub-side stub. Returning it from
+        // the same public-info endpoint lets discovery cards and direct links
+        // reach the domain-warning/join flow instead of failing as a 404.
+        if (Valour.Config.Configs.FederationConfig.Current?.HubEnabled != true)
+            return null;
+
+        return await (from stub in _db.FederatedPlanetStubs.AsNoTracking()
+                      join node in _db.FederatedNodes.AsNoTracking() on stub.NodeDomain equals node.Domain
+                      where stub.Id == planetId && stub.Public && stub.Discoverable
+                            && node.Status == Valour.Database.FederatedNodeStatus.Active
+                      select new PlanetListInfo
+                      {
+                          Id = stub.Id,
+                          PlanetId = stub.Id,
+                          Name = stub.Name,
+                          Description = stub.Description,
+                          MemberCount = stub.MemberCount,
+                          Discoverable = stub.Discoverable,
+                          NodeDomain = stub.NodeDomain,
+                      }).FirstOrDefaultAsync();
     }
     
     private static readonly Expression<Func<Valour.Database.Planet, PlanetListInfo>> PlanetListInfoSelector = x => new PlanetListInfo
@@ -136,8 +210,11 @@ public class PlanetService
         Name = x.Name,
         Description = x.Description,
         HasCustomIcon = x.HasCustomIcon,
+        SelfHostedMedia = x.SelfHostedMedia,
+        SelfHostedVoice = x.SelfHostedVoice,
         HasAnimatedIcon = x.HasAnimatedIcon,
         HasCustomBackground = x.HasCustomBackground,
+        Discoverable = x.Discoverable,
         MemberCount = x.Members.Count(m => !m.IsDeleted),
         Version = x.Version,
         Tags = x.Tags.Select(t => new PlanetTag
@@ -204,6 +281,28 @@ public class PlanetService
             .Take(take)
             .Select(PlanetListInfoSelector)
             .ToListAsync();
+
+        // Surface community-hosted planets alongside official ones. They live in
+        // a separate stub table, so (for now) they're merged onto the first
+        // page rather than interleaved across pagination.
+        if (skip == 0)
+        {
+            var federated = await GetFederatedDiscoveryAsync(50);
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var lowered = search.ToLower();
+                federated = federated
+                    .Where(f => (f.Info.Name ?? "").ToLower().Contains(lowered)
+                                || (f.Info.Description ?? "").ToLower().Contains(lowered))
+                    .ToList();
+            }
+
+            if (federated.Count > 0)
+            {
+                items = items.Concat(federated.Select(f => f.Info)).ToList();
+                totalCount += federated.Count;
+            }
+        }
 
         return new QueryResponse<PlanetListInfo>
         {
@@ -442,13 +541,17 @@ public class PlanetService
     /// <summary>
     /// Soft deletes the given planet
     /// </summary>
-    public async Task DeleteAsync(long planetId)
+    public async Task<TaskResult> DeleteAsync(long planetId)
     {
+        var migrationGuard = await MigrationLock.GuardAsync(_db, planetId);
+        if (!migrationGuard.Success)
+            return migrationGuard;
+
         var entity = await _db.Planets.FindAsync(planetId);
         if (entity is null)
         {
             _logger.LogWarning("Tried to delete planet {PlanetId} but it does not exist.", planetId);
-            return;
+            return TaskResult.SuccessResult;
         }
 
         entity.IsDeleted = true;
@@ -462,6 +565,7 @@ public class PlanetService
 
         // Remove from hosted planet cache so the server stops serving it
         _hostedPlanetService.Remove(planetId);
+        return TaskResult.SuccessResult;
     }
     
     /// <summary>
@@ -590,12 +694,15 @@ public class PlanetService
             return new TaskResult<Planet>(false, baseValid.Message);
         
         var old = await _db.Planets
-            .Include(p => p.Tags) 
+            .Include(p => p.Tags)
             .FirstOrDefaultAsync(p => p.Id == planet.Id);
-        
+
         if (old is null)
             return new TaskResult<Planet>(false, "Planet not found.");
-        
+
+        if (old.LockedForMigration)
+            return new TaskResult<Planet>(false, MigrationLock.Message);
+
         await using var tran = await _db.Database.BeginTransactionAsync();
         
         try
@@ -699,5 +806,80 @@ public class PlanetService
         }
 
         return TaskResult.SuccessResult;
+    }
+
+    ////////////
+    // Vanity //
+    ////////////
+
+    public async Task<TaskResult> CheckVanityAsync(long planetId, string name)
+    {
+        name = name?.Trim().ToLowerInvariant();
+
+        var validation = VanityUtils.ValidateVanity(name);
+        if (!validation.Success)
+            return validation;
+
+        var taken = await _db.Planets
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Vanity == name && x.Id != planetId);
+
+        return taken
+            ? TaskResult.FromFailure("That name is already taken.")
+            : TaskResult.SuccessResult;
+    }
+
+    public async Task<TaskResult> SetVanityAsync(long planetId, string name)
+    {
+        var dbPlanet = await _db.Planets.FirstOrDefaultAsync(x => x.Id == planetId);
+        if (dbPlanet is null)
+            return TaskResult.FromFailure("Planet not found.");
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            dbPlanet.Vanity = null;
+        }
+        else
+        {
+            name = name.Trim().ToLowerInvariant();
+
+            var check = await CheckVanityAsync(planetId, name);
+            if (!check.Success)
+                return check;
+
+            dbPlanet.Vanity = name;
+        }
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // The unique index is the race arbiter
+            return TaskResult.FromFailure("That name was just taken.");
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to set vanity for planet {PlanetId}", planetId);
+            return TaskResult.FromFailure("Failed to set vanity name.");
+        }
+
+        _coreHub.NotifyPlanetChange(dbPlanet.ToModel());
+
+        return TaskResult.SuccessResult;
+    }
+
+    public async Task<long?> ResolveVanityAsync(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+
+        name = name.Trim().ToLowerInvariant();
+
+        var planet = await _db.Planets.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Vanity == name);
+
+        return planet?.Id;
     }
 }

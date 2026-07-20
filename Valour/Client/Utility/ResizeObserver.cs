@@ -15,6 +15,7 @@ public class ResizeObserver : IAsyncDisposable
     private IJSObjectReference _service;
     
     private DotNetObjectReference<ResizeObserver> _dotnetRef;
+
     private bool _disposed;
 
     public async Task Initialize(ElementReference el, IJSRuntime runtime, int debounce = 0)
@@ -24,17 +25,36 @@ public class ResizeObserver : IAsyncDisposable
 
         _dotnetRef = DotNetObjectReference.Create(this);
 
-        _jsModule = await _runtime.InvokeAsync<IJSObjectReference>("import", "./_content/Valour.Client/ts/ResizeObserver.js");
+        try
+        {
+            var module = await _runtime.InvokeAsync<IJSObjectReference>("import", "./_content/Valour.Client/ts/ResizeObserver.js");
 
-        if (_disposed)
-            return;
+            // The owning component can be disposed while we await above. If so,
+            // _dotnetRef is already disposed and passing it to JS would throw
+            // ObjectDisposedException, so bail out and clean up what we created.
+            if (_disposed)
+            {
+                await module.DisposeAsync();
+                return;
+            }
 
-        _service = await _jsModule.InvokeAsync<IJSObjectReference>("init", _element, _dotnetRef, debounce);
+            _jsModule = module;
 
-        if (_disposed)
-            return;
+            var service = await _jsModule.InvokeAsync<IJSObjectReference>("init", _element, _dotnetRef, debounce);
 
-        await _service.InvokeVoidAsync("observe");
+            if (_disposed)
+            {
+                await service.DisposeAsync();
+                return;
+            }
+
+            _service = service;
+
+            await _service.InvokeVoidAsync("observe");
+        }
+        catch (ObjectDisposedException) { }
+        catch (JSDisconnectedException) { }
+        catch (JSException) { }
     }
 
     public async ValueTask DisposeAsync()

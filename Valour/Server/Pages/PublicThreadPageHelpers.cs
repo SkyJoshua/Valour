@@ -1,11 +1,13 @@
-#nullable enable
+#nullable enable annotations
 
 using System.Text.RegularExpressions;
 using Markdig;
 using Microsoft.EntityFrameworkCore;
 using Valour.Server.Cdn;
 using Valour.Server.Cdn.Api;
+using Valour.Server.Cdn.Storage;
 using Valour.Server.Database;
+using Valour.Shared.Cdn;
 
 namespace Valour.Server.Pages;
 
@@ -85,6 +87,23 @@ public static partial class PublicThreadPageHelpers
     }
 
     /// <summary>
+    /// Normalizes a media URL for use in server-rendered pages. Data URIs
+    /// (e.g. generated planet icon SVGs) and absolute URLs pass through;
+    /// bare asset paths get rooted.
+    /// </summary>
+    public static string NormalizeMediaUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return url ?? string.Empty;
+
+        if (url.StartsWith("http", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            return url;
+
+        return "/" + url.TrimStart('/');
+    }
+
+    /// <summary>
     /// Resolves each member's primary (highest) role, the same role chat
     /// uses for name colors and role tags.
     /// </summary>
@@ -130,12 +149,13 @@ public static partial class PublicThreadPageHelpers
     /// Resolves a CDN attachment location to a directly-loadable URL.
     /// Bucket content gets a pre-signed URL; proxy/Tenor URLs pass through.
     /// </summary>
-    public static async Task<string?> TryGetSignedUrlAsync(ValourDb db, CdnMemoryCache cache, string? location)
+    public static async Task<string?> TryGetSignedUrlAsync(ValourDb db, CdnMemoryCache cache, CdnStorageProvider storage, string? location)
     {
         if (string.IsNullOrWhiteSpace(location))
             return null;
 
         if (location.StartsWith("https://media.tenor.com", StringComparison.OrdinalIgnoreCase) ||
+            KlipyMediaUrls.IsAllowed(location) ||
             location.Contains("proxy/", StringComparison.OrdinalIgnoreCase))
             return location;
 
@@ -154,7 +174,7 @@ public static partial class PublicThreadPageHelpers
             if (bucketItem is null)
                 return null;
 
-            return await ContentApi.GetSignedUrlAsync(cache, bucketItem);
+            return await ContentApi.GetSignedUrlAsync(cache, storage, bucketItem);
         }
         catch
         {

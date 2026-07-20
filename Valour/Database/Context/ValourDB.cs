@@ -1,4 +1,5 @@
 ﻿using EntityFramework.Exceptions.PostgreSQL;
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -30,7 +31,7 @@ internal class ValourDbDesignTimeContext : IDesignTimeDbContextFactory<ValourDb>
     }
 }
 
-public partial class ValourDb : DbContext
+public partial class ValourDb : DbContext, IDataProtectionKeyContext
 {
     public static readonly string ConnectionString = $"Host={DbConfig.Instance.Host};Database={DbConfig.Instance.Database};Username={DbConfig.Instance.Username};Password={DbConfig.Instance.Password};SslMode=Prefer;";
 
@@ -76,6 +77,11 @@ public partial class ValourDb : DbContext
     /// Table for user Tenor favorites
     /// </summary>
     public DbSet<TenorFavorite> TenorFavorites { get; set; }
+
+    /// <summary>
+    /// Table for provider-neutral GIF favorites created in 0.7 and later.
+    /// </summary>
+    public DbSet<GifFavorite> GifFavorites { get; set; }
 
     // USER LOGIN AND PERMISSION STUFF //
 
@@ -160,6 +166,16 @@ public partial class ValourDb : DbContext
     public DbSet<ModerationAuditLog> ModerationAuditLogs { get; set; }
 
     /// <summary>
+    /// Platform-level audit trail of staff tool usage.
+    /// </summary>
+    public DbSet<StaffAuditLog> StaffAuditLogs { get; set; }
+
+    /// <summary>
+    /// Staff-initiated MFA removals waiting out their safety delay.
+    /// </summary>
+    public DbSet<PendingMfaRemoval> PendingMfaRemovals { get; set; }
+
+    /// <summary>
     /// Table for planet invites
     /// </summary>
     public DbSet<StatObject> Stats { get; set; }
@@ -209,6 +225,9 @@ public partial class ValourDb : DbContext
     public DbSet<ThreadBoost> ThreadBoosts { get; set; }
     public DbSet<ThreadCommentBoost> ThreadCommentBoosts { get; set; }
 
+    public DbSet<PlanetWikiPage> PlanetWikiPages { get; set; }
+    public DbSet<PlanetWikiRevision> PlanetWikiRevisions { get; set; }
+
     public DbSet<UserChannelState> UserChannelStates { get; set; }
     
     public DbSet<NodeStats> NodeStats { get; set; }
@@ -237,6 +256,26 @@ public partial class ValourDb : DbContext
     ////////////////
     
     public DbSet<CdnBucketItem> CdnBucketItems { get; set; }
+    public DbSet<PlanetStorageConfig> PlanetStorageConfigs { get; set; }
+    public DbSet<PlanetVoiceConfig> PlanetVoiceConfigs { get; set; }
+    public DbSet<FederationKey> FederationKeys { get; set; }
+    public DbSet<FederatedNode> FederatedNodes { get; set; }
+    public DbSet<FederatedMigrationHostingApproval> FederatedMigrationHostingApprovals { get; set; }
+    public DbSet<FederatedPlanetStub> FederatedPlanetStubs { get; set; }
+    public DbSet<FederatedMigration> FederatedMigrations { get; set; }
+    public DbSet<FederatedImportReceipt> FederatedImportReceipts { get; set; }
+    public DbSet<FederatedPurge> FederatedPurges { get; set; }
+    public DbSet<FederatedAcceptedDomain> FederatedAcceptedDomains { get; set; }
+    public DbSet<FederatedMembership> FederatedMemberships { get; set; }
+    public DbSet<FederatedInviteGrant> FederatedInviteGrants { get; set; }
+    public DbSet<FederatedInviteRedemption> FederatedInviteRedemptions { get; set; }
+
+    /// <summary>
+    /// ASP.NET Data Protection key ring, persisted in the shared database so
+    /// every node (and container restarts) can decrypt protected payloads
+    /// such as planet storage credentials.
+    /// </summary>
+    public DbSet<DataProtectionKey> DataProtectionKeys { get; set; }
     public DbSet<CdnProxyItem> CdnProxyItems { get; set; }
     
     ////////////
@@ -297,6 +336,8 @@ public partial class ValourDb : DbContext
         PlanetRule.SetupDbModel(modelBuilder);
         PlanetReport.SetupDbModel(modelBuilder);
         PlanetThread.SetupDbModel(modelBuilder);
+        PlanetWikiPage.SetupDbModel(modelBuilder);
+        PlanetWikiRevision.SetupDbModel(modelBuilder);
         ThreadComment.SetupDbModel(modelBuilder);
         ThreadAttachment.SetupDbModel(modelBuilder);
         ThreadBoost.SetupDbModel(modelBuilder);
@@ -317,12 +358,27 @@ public partial class ValourDb : DbContext
         AutomodAction.SetupDbModel(modelBuilder);
         AutomodLog.SetupDbModel(modelBuilder);
         ModerationAuditLog.SetupDbModel(modelBuilder);
+        StaffAuditLog.SetupDbModel(modelBuilder);
+        PendingMfaRemoval.SetupDbModel(modelBuilder);
 
         Valour.Database.NodeStats.SetupDbModel(modelBuilder);
         OldPlanetRoleMember.SetupDbModel(modelBuilder);
         
         CdnBucketItem.SetupDbModel(modelBuilder);
+        PlanetStorageConfig.SetupDbModel(modelBuilder);
+        PlanetVoiceConfig.SetupDbModel(modelBuilder);
+        Planet.SetupDbModel(modelBuilder);
+        FederationKey.SetupDbModel(modelBuilder);
+        FederatedNode.SetupDbModel(modelBuilder);
+        FederatedMigrationHostingApproval.SetupDbModel(modelBuilder);
+        FederatedPlanetStub.SetupDbModel(modelBuilder);
+        FederatedMigration.SetupDbModel(modelBuilder);
+        FederatedImportReceipt.SetupDbModel(modelBuilder);
+        FederatedPurge.SetupDbModel(modelBuilder);
+        FederatedAcceptedDomain.SetupDbModel(modelBuilder);
+        FederatedMembership.SetupDbModel(modelBuilder);
+        FederatedInviteGrant.SetupDbModel(modelBuilder);
+        FederatedInviteRedemption.SetupDbModel(modelBuilder);
         Transaction.SetupDbModel(modelBuilder);
     }
 }
-

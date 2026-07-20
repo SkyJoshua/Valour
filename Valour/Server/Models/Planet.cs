@@ -48,7 +48,24 @@ public class Planet : ServerModel<long>, ISharedPlanet
     /// True if you probably shouldn't be on this server at work owo
     /// </summary>
     public bool Nsfw { get; set; }
-    
+
+    /// <summary>
+    /// True when this planet stores media on its own infrastructure
+    /// (bring-your-own-storage) rather than Valour's CDN
+    /// </summary>
+    public bool SelfHostedMedia { get; set; }
+
+    /// <summary>
+    /// True when this planet runs voice/video calls on its own LiveKit SFU
+    /// (bring-your-own-voice) rather than Valour's voice backend
+    /// </summary>
+    public bool SelfHostedVoice { get; set; }
+
+    /// <summary>
+    /// True while a migration is in progress — the planet is read-only.
+    /// </summary>
+    public bool LockedForMigration { get; set; }
+
     /// <summary>
     /// The version of the planet. Used for cache busting.
     /// </summary>
@@ -73,7 +90,22 @@ public class Planet : ServerModel<long>, ISharedPlanet
     /// The id of the single thread pinned to the top of this planet's feed, if any
     /// </summary>
     public long? PinnedThreadId { get; set; }
-    
+
+    /// <summary>
+    /// True if the docs/wiki is enabled for this planet
+    /// </summary>
+    public bool EnableWiki { get; set; }
+
+    /// <summary>
+    /// True if this planet's docs can be read publicly without an account
+    /// </summary>
+    public bool PublicWiki { get; set; }
+
+    /// <summary>
+    /// The vanity name claimed for this planet's public docs site, if any
+    /// </summary>
+    public string Vanity { get; set; }
+
     public List<PlanetTag> Tags { get; set; } = new();
     
     public string GetIconUrl(IconFormat format = IconFormat.Webp256) =>

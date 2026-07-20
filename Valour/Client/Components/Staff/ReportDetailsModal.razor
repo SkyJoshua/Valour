@@ -554,14 +554,14 @@
         _isSubmitting = true;
         StateHasChanged();
 
-        var disableResult = await StaffService.SetUserDisabledAsync(Data.Report.ReportedUserId.Value, true);
+        var disableResult = await StaffService.SetUserDisabledAsync(Data.Report.ReportedUserId.Value, true,
+            $"Disabled while resolving report {Data.Report.Id}");
         if (!disableResult.Success)
         {
-            ToastContainer.Instance.AddToast(new ProgressToastData()
-            {
-                Message = $"Failed to disable user: {disableResult.Message}",
-                ProgressTask = Task.FromException(new Exception(disableResult.Message))
-            });
+            // Plain toast auto-dismisses; a ProgressToastData added via AddToast
+            // never closes because nothing awaits its ProgressTask (#1565)
+            ToastContainer.Instance.AddToast(new ToastData(
+                "Error", $"Failed to disable user: {disableResult.Message}", ToastProgressState.Failure));
             _isSubmitting = false;
             StateHasChanged();
             return;
@@ -587,11 +587,10 @@
 
         if (!result.Success)
         {
-            ToastContainer.Instance.AddToast(new ProgressToastData()
-            {
-                Message = $"Failed to resolve report: {result.Message}",
-                ProgressTask = Task.FromException(new Exception(result.Message))
-            });
+            // Plain toast auto-dismisses; a ProgressToastData added via AddToast
+            // never closes because nothing awaits its ProgressTask (#1565)
+            ToastContainer.Instance.AddToast(new ToastData(
+                "Error", $"Failed to resolve report: {result.Message}", ToastProgressState.Failure));
             StateHasChanged();
             return;
         }
@@ -601,12 +600,10 @@
         Data.Report.StaffNotes = _staffNotes;
         Data.Report.ResolvedAt = DateTime.UtcNow;
 
-        ToastContainer.Instance.AddToast(new ProgressToastData()
-        {
-            Title = "Success",
-            Message = "Report resolved successfully",
-            ProgressTask = Task.CompletedTask
-        });
+        // Plain success toast auto-dismisses; a ProgressToastData added via
+        // AddToast never closes because nothing awaits its ProgressTask (#1565)
+        ToastContainer.Instance.AddToast(new ToastData(
+            "Success", "Report resolved successfully", ToastProgressState.Success));
 
         if (Data.OnResolved != null)
         {

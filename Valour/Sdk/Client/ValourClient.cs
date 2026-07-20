@@ -1,26 +1,27 @@
+using System.Net.Http.Json;
 using Valour.Sdk.Nodes;
 using Valour.Sdk.Services;
-using Valour.Sdk.Services.Klipy;
 using Valour.Sdk.Utility;
 using Valour.Shared;
+using Valour.Shared.Hosting;
 using Valour.Shared.Models;
 
 namespace Valour.Sdk.Client;
 
 /*
-     █████   █████           ████                               
-    ░░███   ░░███           ░░███                                   
-     ░███    ░███   ██████   ░███   ██████  █████ ████ ████████ 
+     █████   █████           ████
+    ░░███   ░░███           ░░███
+     ░███    ░███   ██████   ░███   ██████  █████ ████ ████████
      ░███    ░███  ░░░░░███  ░███  ███░░███░░███ ░███ ░░███░░███
-     ░░███   ███    ███████  ░███ ░███ ░███ ░███ ░███  ░███ ░░░ 
-      ░░░█████░    ███░░███  ░███ ░███ ░███ ░███ ░███  ░███     
-        ░░███     ░░████████ █████░░██████  ░░████████ █████    
-         ░░░       ░░░░░░░░ ░░░░░  ░░░░░░    ░░░░░░░░ ░░░░░     
-                                                            
+     ░░███   ███    ███████  ░███ ░███ ░███ ░███ ░███  ░███ ░░░
+      ░░░█████░    ███░░███  ░███ ░███ ░███ ░███ ░███  ░███
+        ░░███     ░░████████ █████░░██████  ░░████████ █████
+         ░░░       ░░░░░░░░ ░░░░░  ░░░░░░    ░░░░░░░░ ░░░░░
+
     This is the client-side API for Valour. It is used to connect to nodes and
     interact with the Valour network. This client is helpful for building bots,
     but make sure you follow the platform terms of use, which should be included
-    in this repository.                
+    in this repository.
  */
 
 public class ValourClient
@@ -42,7 +43,7 @@ public class ValourClient
     public readonly PlanetService PlanetService;
     public readonly ChannelService  ChannelService;
     public readonly PermissionService PermissionService;
-    public readonly TenorService TenorService;
+    public readonly KlipyService KlipyService;
     public readonly TranslationService TranslationService;
     public readonly SubscriptionService SubscriptionService;
     public readonly NotificationService NotificationService;
@@ -58,6 +59,7 @@ public class ValourClient
     public readonly VoiceStateService VoiceStateService;
     public readonly AttachmentService AttachmentService;
     public readonly ThreadService ThreadService;
+    public readonly WikiService WikiService;
 
     /// <summary>
     /// The base address the client is connected to
@@ -88,29 +90,29 @@ public class ValourClient
     /// The primary node this client is connected to
     /// </summary>
     public Node PrimaryNode { get; set; }
-    
+
     /// <summary>
     /// Used mostly for testing, allows for a custom HttpClientProvider
     /// </summary>
     public HttpClientProvider HttpClientProvider { get; set; }
-    
+
 
     public ValourClient(string baseAddress, LoggingService logger = null, HttpClientProvider httpProvider = null)
     {
         BaseAddress = baseAddress;
-        
+
         if (!BaseAddress.EndsWith('/'))
             BaseAddress += '/';
-        
+
         if (logger is null)
             Logger = new LoggingService();
-        else 
+        else
             Logger = logger;
-        
+
         HttpClientProvider = httpProvider;
-        
+
         Logger.Log("App", $"ValourClient Base address: {BaseAddress}", "magenta");
-        
+
         Cache = new CacheService(this);
         AuthService = new AuthService(this);
         NodeService = new NodeService(this);
@@ -137,15 +139,22 @@ public class ValourClient
         VoiceStateService = new VoiceStateService(this);
         AttachmentService = new AttachmentService(this);
         ThreadService = new ThreadService(this);
+        WikiService = new WikiService(this);
 
-        var klipyHandler = new KlipyTenorCompatHandler(TenorService.LegacyTenorKey, TenorService.KlipyApiKey, new HttpClientHandler());
-        var tenorHttpClient = new HttpClient(klipyHandler);
-        tenorHttpClient.BaseAddress = new Uri("https://tenor.googleapis.com/v2/");
-        TenorService = new TenorService(tenorHttpClient, this);
-
+        KlipyService = new KlipyService(this);
         TranslationService = new TranslationService(new HttpClient(), this);
     }
-    
+
+    /// <summary>
+    /// Configures the public, client-side Klipy platform key. This is intended
+    /// for browser/native application configuration and must not be used for a
+    /// server credential: clients can always inspect this value.
+    /// </summary>
+    public void ConfigureKlipy(string? publicApiKey)
+    {
+        KlipyService.Configure(publicApiKey);
+    }
+
     /// <summary>
     /// Sets the origin of the client. Should only be called
     /// before nodes are initialized. Origin is normalized to include a trailing slash.
@@ -162,6 +171,55 @@ public class ValourClient
         }
 
         _httpClient.BaseAddress = new Uri(BaseAddress);
+    }
+
+    /// <summary>
+    /// The instance manifest fetched from the server, if available.
+    /// Describes the instance's hosts and configured capabilities.
+    /// </summary>
+    public InstanceManifest InstanceManifest { get; private set; }
+
+    /// <summary>
+    /// Fetches the instance manifest from the connected server and applies its
+    /// hosts to the shared ValourHosts source of truth so links, CDN URLs, and
+    /// route parsing point at the right domains for this instance. Safe to call
+    /// against older servers — returns null when the endpoint is missing.
+    /// </summary>
+    public async Task<InstanceManifest> FetchInstanceManifestAsync()
+    {
+        try
+        {
+            var response = await Http.GetAsync(".well-known/valour-instance");
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            var manifest = await response.Content.ReadFromJsonAsync<InstanceManifest>();
+            if (manifest?.Hosts is null)
+                return manifest;
+
+            InstanceManifest = manifest;
+
+            var hosts = manifest.Hosts;
+            if (!string.IsNullOrWhiteSpace(hosts.RootDomain))
+                ValourHosts.RootDomain = hosts.RootDomain;
+            if (!string.IsNullOrWhiteSpace(hosts.App))
+                ValourHosts.AppHost = hosts.App;
+            if (!string.IsNullOrWhiteSpace(hosts.Threads))
+                ValourHosts.ThreadsHost = hosts.Threads;
+            if (!string.IsNullOrWhiteSpace(hosts.Docs))
+                ValourHosts.WikiHost = hosts.Docs;
+            if (!string.IsNullOrWhiteSpace(hosts.ContentCdn))
+                ValourHosts.ContentCdnHost = hosts.ContentCdn;
+            if (!string.IsNullOrWhiteSpace(hosts.PublicCdn))
+                ValourHosts.PublicCdnHost = hosts.PublicCdn;
+
+            return manifest;
+        }
+        catch
+        {
+            // Older servers don't serve a manifest; defaults remain in place.
+            return null;
+        }
     }
 
     /// <summary>
@@ -195,22 +253,22 @@ public class ValourClient
     {
         if (token is not null)
             AuthService.SetToken(token);
-        
+
         // Login to Valour
         var userResult = await AuthService.LoginAsync();
         if (!userResult.Success)
             return userResult;
-        
+
         // Setup primary node
         // await NodeService.SetupPrimaryNodeAsync(); Already done in LoginAsync
-        
+
         var loadTasks = new List<Task>()
         {
             // LoadChannelStatesAsync(), this is already done by the Home component
             FriendService.FetchFriendsAsync(),
             BlockService.FetchBlocksAsync(),
             PlanetService.FetchJoinedPlanetsAsync(),
-            TenorService.LoadTenorFavoritesAsync(),
+            KlipyService.LoadGifFavoritesAsync(),
             ChannelService.LoadDmChannelsAsync(),
             NotificationService.LoadUnreadNotificationsAsync()
         };
@@ -219,7 +277,7 @@ public class ValourClient
         try
         {
             await Task.WhenAll(loadTasks);
-        } 
+        }
         catch (Exception e)
         {
             Logger.Log("App", "Critical error during startup: " + e.Message, "red");
@@ -228,12 +286,12 @@ public class ValourClient
 
         return TaskResult.SuccessResult;
     }
-        
+
     public async Task<TaskResult<List<ReferralDataModel>>> GetMyReferralsAsync()
     {
         return await PrimaryNode.GetJsonAsync<List<ReferralDataModel>>("api/users/me/referrals");
     }
-    
+
     public async Task<TaskResult> UpdateMyPasswordAsync(string oldPassword, string newPassword) {
         var model = new ChangePasswordRequest() { OldPassword = oldPassword, NewPassword = newPassword };
         return await PrimaryNode.PostAsync("api/users/me/password", model);
@@ -246,10 +304,10 @@ public class ValourClient
 
         if (result.Success)
             Me.Name = newUsername;
-        
+
         return result;
     }
-    
+
     // Sad zone
     public async Task<TaskResult> DeleteMyAccountAsync(string password)
     {

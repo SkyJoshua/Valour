@@ -20,6 +20,26 @@
         </div>
     </div>
 
+    @* ===== Username Privacy ===== *@
+    <div class="editor-section">
+        <h3 class="editor-section-title">
+            <i class="bi bi-person-badge"></i>
+            Username Privacy
+        </h3>
+
+        <div class="form-group">
+            <label>
+                <input type="checkbox" checked="@Client.Me.HidePriorName" @onchange="OnHidePriorNameChanged" />
+                Hide my previous username from other users
+            </label>
+            <p class="helper-text">
+                When enabled, your profile no longer shows the name you used
+                before your last name change.
+            </p>
+            <ResultLabel Result="@_priorNameResult" />
+        </div>
+    </div>
+
     @* ===== Blocking ===== *@
     <div class="editor-section">
         <h3 class="editor-section-title">
@@ -84,6 +104,23 @@
 </div>
 
 @code {
+    private ITaskResult _priorNameResult;
+
+    private async Task OnHidePriorNameChanged(ChangeEventArgs e)
+    {
+        var value = e.Value is bool b && b;
+        var old = Client.Me.HidePriorName;
+        Client.Me.HidePriorName = value;
+
+        var result = await Client.Me.UpdateAsync();
+        _priorNameResult = result;
+
+        if (!result.Success)
+            Client.Me.HidePriorName = old;
+
+        StateHasChanged();
+    }
+
     private DmPolicy _dmPolicy = DmPolicy.Everyone;
     private string _blockName;
     private int _selectedBlockType = 0;
@@ -165,16 +202,14 @@
             return;
         }
 
-        var hashIndex = _blockName.IndexOf('#');
-        if (hashIndex <= 0 || hashIndex >= _blockName.Length - 1)
+        if (!UserUtils.TrySplitNameAndTag(_blockName, out var blockUserName, out var blockUserTag))
         {
             _blockResult = new TaskResult(false, "Invalid format. Use username#tag (e.g. SpikeViper#a1b2).");
             return;
         }
 
-        // Split username#tag and look up via separate route parameters
-        var parts = _blockName.Split('#', 2);
-        var userResponse = await Client.PrimaryNode.GetJsonAsync<User>($"api/users/byNameAndTag/{Uri.EscapeDataString(parts[0])}/{Uri.EscapeDataString(parts[1])}");
+        // Look up username#tag via separate route parameters
+        var userResponse = await Client.PrimaryNode.GetJsonAsync<User>($"api/users/byNameAndTag/{Uri.EscapeDataString(blockUserName)}/{Uri.EscapeDataString(blockUserTag)}");
         if (!userResponse.Success || userResponse.Data is null)
         {
             _blockResult = new TaskResult(false, $"User {_blockName} was not found.");

@@ -9,6 +9,7 @@ using Valour.Server.Services;
 using Valour.Server.Workers;
 using Valour.Shared.Models;
 using Valour.Shared.Models.Staff;
+using Valour.Shared.Queries;
 
 namespace Valour.Tests.Services;
 
@@ -85,6 +86,53 @@ public class AutomodServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateTriggerWithActions_AddRoleAction_PersistsRoleId()
+    {
+        // Server-side contract behind #1477: the selected role of an
+        // AddRole/RemoveRole action must round-trip through create + reopen
+        var roleService = _scope.ServiceProvider.GetRequiredService<PlanetRoleService>();
+        var roleResult = await roleService.CreateAsync(new PlanetRole
+        {
+            Name = "Automod role",
+            PlanetId = _planet.Id,
+            Permissions = 0,
+            ChatPermissions = 0,
+            CategoryPermissions = 0,
+            VoicePermissions = 0
+        });
+        Assert.True(roleResult.Success, roleResult.Message);
+        var role = roleResult.Data!;
+
+        var trigger = new AutomodTrigger
+        {
+            PlanetId = _planet.Id,
+            MemberAddedBy = _ownerMember.Id,
+            Name = "Role trigger",
+            Type = AutomodTriggerType.Blacklist,
+            TriggerWords = "role-trigger-word"
+        };
+
+        var action = new AutomodAction
+        {
+            PlanetId = _planet.Id,
+            MemberAddedBy = _ownerMember.Id,
+            ActionType = AutomodActionType.AddRole,
+            RoleId = role.Id,
+            Strikes = 1,
+            UseGlobalStrikes = false
+        };
+
+        var createResult = await _automodService.CreateTriggerWithActionsAsync(trigger, [action]);
+        Assert.True(createResult.Success, createResult.Message);
+
+        // The reopen path in the client loads actions via the query endpoint
+        var page = await _automodService.QueryTriggerActionsAsync(
+            _planet.Id, createResult.Data!.Id, new QueryRequest { Take = 10 });
+        var fetched = Assert.Single(page.Items);
+        Assert.Equal(role.Id, fetched.RoleId);
+    }
+
+    [Fact]
     public async Task ScanMessage_BlacklistRespond_PostsVictorResponse()
     {
         var regularMember = await RegisterAndJoinPlanetAsync();
@@ -123,7 +171,7 @@ public class AutomodServiceTests : IAsyncLifetime
 
         Assert.True(postResult.Success, postResult.Message);
 
-        var response = await WaitForStagedMessageAsync(_defaultChannel.Id, m =>
+        var response = await WaitForMessageAsync(_defaultChannel.Id, m =>
             m.AuthorUserId == ISharedUser.VictorUserId &&
             m.Content.Contains("Automod response text", StringComparison.Ordinal) &&
             m.Content.Contains($"«@m-{regularMember.Id}»", StringComparison.Ordinal));
@@ -284,7 +332,10 @@ public class AutomodServiceTests : IAsyncLifetime
 
         var joinedMember = joinResult.Data!;
 
-        var response = await WaitForStagedMessageAsync(_defaultChannel.Id, m =>
+        Assert.True(await _db.AutomodLogs.AnyAsync(x =>
+            x.TriggerId == trigger.Id && x.MemberId == joinedMember.Id));
+
+        var response = await WaitForMessageAsync(_defaultChannel.Id, m =>
             m.AuthorUserId == ISharedUser.VictorUserId &&
             m.Content.Contains("Welcome to the planet", StringComparison.Ordinal) &&
             m.Content.Contains($"«@m-{joinedMember.Id}»", StringComparison.Ordinal));
@@ -351,7 +402,7 @@ public class AutomodServiceTests : IAsyncLifetime
         return joinResult.Data!;
     }
 
-    private static async Task<Message?> WaitForStagedMessageAsync(
+    private async Task<Message?> WaitForMessageAsync(
         long channelId,
         Func<Message, bool> predicate,
         int timeoutMs = 5000)
@@ -361,6 +412,17 @@ public class AutomodServiceTests : IAsyncLifetime
         {
             var staged = PlanetMessageWorker.GetStagedMessages(channelId);
             var match = staged.FirstOrDefault(predicate);
+            if (match is not null)
+                return match;
+
+            // The worker may flush between polling iterations. Treat a
+            // persisted response as success too; staging is an implementation
+            // detail, while delivery is the actual behavior under test.
+            var persisted = await _db.Messages
+                .AsNoTracking()
+                .Where(x => x.ChannelId == channelId)
+                .ToListAsync();
+            match = persisted.Select(x => x.ToModel()).FirstOrDefault(predicate);
             if (match is not null)
                 return match;
 

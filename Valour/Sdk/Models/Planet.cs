@@ -105,6 +105,13 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
     public readonly ModelStore<Threads.PlanetThread, long> Threads = new();
 
     /// <summary>
+    /// The docs/wiki tree of this planet (metadata only; page content is
+    /// fetched through WikiService). Position-sorted, flat — use WikiTree to
+    /// assemble the hierarchy.
+    /// </summary>
+    public readonly SortedModelStore<Wiki.PlanetWikiPage, long> WikiPages = new();
+
+    /// <summary>
     /// The loaded thread comments of this planet. Will not contain all comments.
     /// </summary>
     public readonly ModelStore<Threads.ThreadComment, long> ThreadComments = new();
@@ -189,6 +196,18 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
     /// True if you probably shouldn't be on this server at work owo
     /// </summary>
     public bool Nsfw { get; set; }
+
+    /// <summary>
+    /// True when this planet stores media on its own infrastructure
+    /// (bring-your-own-storage) rather than Valour's CDN
+    /// </summary>
+    public bool SelfHostedMedia { get; set; }
+
+    /// <summary>
+    /// True when this planet runs voice/video calls on its own LiveKit SFU
+    /// (bring-your-own-voice) rather than Valour's voice backend
+    /// </summary>
+    public bool SelfHostedVoice { get; set; }
     
     /// <summary>
     /// The version of the planet. Used for cache busting.
@@ -214,6 +233,21 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
     /// The id of the single thread pinned to the top of this planet's feed, if any
     /// </summary>
     public long? PinnedThreadId { get; set; }
+
+    /// <summary>
+    /// True if the docs/wiki is enabled for this planet
+    /// </summary>
+    public bool EnableWiki { get; set; }
+
+    /// <summary>
+    /// True if this planet's docs can be read publicly without an account
+    /// </summary>
+    public bool PublicWiki { get; set; }
+
+    /// <summary>
+    /// The vanity name claimed for this planet's public docs site, if any
+    /// </summary>
+    public string Vanity { get; set; }
 
     public List<PlanetTag> Tags { get; set; }
 
@@ -365,6 +399,17 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
         _node = node;
     }
 
+    /// <summary>
+    /// Planet-scoped operations must follow the planet's assigned node. The
+    /// base model defaults to the primary hub, which is incorrect for a
+    /// community-hosted planet and would send moderation, storage, thread, and
+    /// other planet APIs to the wrong origin after federation routing.
+    /// </summary>
+    [JsonIgnore]
+    [IgnoreRealtimeChanges]
+    public override Node Node =>
+        _node ?? Client?.NodeService.GetKnownByPlanet(Id) ?? base.Node;
+
 
     protected override void OnDeleted()
     {
@@ -386,6 +431,7 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
         Rules.Dispose();
         Threads.Dispose();
         ThreadComments.Dispose();
+        WikiPages.Dispose();
     }
 
     public async Task EnsureReadyAsync()
@@ -728,6 +774,21 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
         Rules.Clear(true);
         rules.SyncAll(Client, ModelInsertFlags.Batched);
         Rules.NotifySet();
+    }
+
+    /// <summary>
+    /// Loads the planet's docs tree (metadata only) from the server.
+    /// </summary>
+    public async Task LoadWikiAsync()
+    {
+        var docs = (await Node.GetJsonAsync<List<Wiki.PlanetWikiPage>>(
+            Valour.Shared.Models.Wiki.ISharedPlanetWikiPage.GetTreeRoute(Id))).Data;
+        if (docs is null)
+            return;
+
+        WikiPages.Clear(true);
+        docs.SyncAll(Client, ModelInsertFlags.Batched);
+        WikiPages.NotifySet();
     }
 
     public void NotifyRoleOrderChange(RoleOrderEvent e)

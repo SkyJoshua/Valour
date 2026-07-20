@@ -237,6 +237,48 @@ public class UserApi
         return Results.Ok(result.Message);
     }
 
+    /// <summary>
+    /// Returns when a staff-scheduled MFA removal will execute for the
+    /// current account, or 404 if none is pending.
+    /// </summary>
+    [UserRequired]
+    [ValourRoute(HttpVerbs.Get, "api/users/me/mfaremoval")]
+    public static async Task<IResult> GetPendingMfaRemovalRouteAsync(
+        UserService userService,
+        ValourDb db)
+    {
+        var userId = await userService.GetCurrentUserIdAsync();
+
+        var pending = await db.PendingMfaRemovals
+            .Where(x => x.TargetUserId == userId && x.Status == Valour.Database.MfaRemovalStatus.Pending)
+            .Select(x => (DateTime?)x.ExecuteAt)
+            .FirstOrDefaultAsync();
+
+        if (pending is null)
+            return ValourResult.NotFound("No pending MFA removal.");
+
+        return Results.Json(pending);
+    }
+
+    /// <summary>
+    /// Lets the account owner cancel a staff-scheduled MFA removal — the
+    /// escape hatch if the removal was socially engineered.
+    /// </summary>
+    [UserRequired(UserPermissionsEnum.FullControl)]
+    [ValourRoute(HttpVerbs.Post, "api/users/me/mfaremoval/cancel")]
+    public static async Task<IResult> CancelPendingMfaRemovalRouteAsync(
+        UserService userService,
+        StaffService staffService)
+    {
+        var userId = await userService.GetCurrentUserIdAsync();
+
+        var result = await staffService.CancelMfaRemovalAsync(userId, userId, isStaff: false, "Cancelled by account owner");
+        if (!result.Success)
+            return ValourResult.BadRequest(result.Message);
+
+        return ValourResult.Ok(result.Message);
+    }
+
     [ValourRoute(HttpVerbs.Get, "api/users/me")]
     public static async Task<IResult> SelfRouteAsync(
         UserService userService)
@@ -271,7 +313,7 @@ public class UserApi
 
         tokenRequest.Email = UserUtils.SanitizeEmail(tokenRequest.Email);
         if (string.IsNullOrWhiteSpace(tokenRequest.Email))
-            return Results.Json(new AuthResult { Success = false, Message = GenericAuthFailureMessage });
+            return Results.Json(new ServerAuthResult { Success = false, Message = GenericAuthFailureMessage });
 
         var validResult = await userService.ValidateCredentialAsync(
             CredentialType.PASSWORD,
@@ -280,16 +322,19 @@ public class UserApi
 
         // Keep credential failures indistinguishable from account state failures.
         if (!validResult.Success || validResult.Data is null)
-            return Results.Json(new AuthResult { Success = false, Message = GenericAuthFailureMessage });
+        {
+            var disabled = validResult.Code == UserService.AccountDisabledCode;
+            return Results.Json(new ServerAuthResult { Success = false, Message = GenericAuthFailureMessage, Disabled = disabled });
+        }
 
         var user = validResult.Data;
         var userPrivateInfo = await userService.GetUserPrivateInfoAsync(tokenRequest.Email);
         if (userPrivateInfo is null || userPrivateInfo.UserId != user.Id)
-            return Results.Json(new AuthResult { Success = false, Message = GenericAuthFailureMessage });
+            return Results.Json(new ServerAuthResult { Success = false, Message = GenericAuthFailureMessage });
 
         if (!userPrivateInfo.Verified)
         {
-            return Results.Json(new AuthResult
+            return Results.Json(new ServerAuthResult
             {
                 Success = false,
                 Message = GenericAuthFailureMessage,
@@ -302,7 +347,7 @@ public class UserApi
         {
             if (string.IsNullOrWhiteSpace(tokenRequest.MultiFactorCode))
             {
-                return Results.Json(new AuthResult
+                return Results.Json(new ServerAuthResult
                 {
                     Success = true,
                     Token = null,
@@ -320,7 +365,7 @@ public class UserApi
         if (!result.Success)
             return ValourResult.Problem(result.Message);
 
-        return Results.Json(new AuthResult
+        return Results.Json(new ServerAuthResult
         {
             Success = true,
             Token = result.Data,
@@ -579,6 +624,14 @@ public class UserApi
         return Results.Json(await userService.GetTenorFavoritesAsync(userId));
     }
 
+    [ValourRoute(HttpVerbs.Get, "api/users/me/giffavorites")]
+    [UserRequired(UserPermissionsEnum.Messages)]
+    public static async Task<IResult> GetGifFavoritesRouteAsync(UserService userService)
+    {
+        var userId = await userService.GetCurrentUserIdAsync();
+        return Results.Json(await userService.GetGifFavoritesAsync(userId));
+    }
+
     [ValourRoute(HttpVerbs.Get, "api/users/me/referrals")]
     [UserRequired(UserPermissionsEnum.FullControl)]
     public static async Task<IResult> GetReferralsAsync(UserService userService)
@@ -793,6 +846,21 @@ public class UserApi
         return Results.Json(prefs.ToModel());
     }
 
+    [ValourRoute(HttpVerbs.Post, "api/users/me/preferences/forceGpuAcceleration/{enabled}")]
+    [UserRequired]
+    public static async Task<IResult> SetForceGpuAccelerationAsync(
+        bool enabled,
+        UserService userService,
+        ValourDb db)
+    {
+        var userId = await userService.GetCurrentUserIdAsync();
+        var prefs = await EnsurePreferencesAsync(userId, db);
+        prefs.ForceGpuAcceleration = enabled;
+
+        await db.SaveChangesAsync();
+        return Results.Json(prefs.ToModel());
+    }
+
     private static async Task<DbUserPreferences> EnsurePreferencesAsync(long userId, ValourDb db)
     {
         var prefs = await db.UserPreferences.FindAsync(userId);
@@ -827,7 +895,8 @@ public class UserApi
             ErrorReportingState = ErrorReportingState.Unset,
             NotificationVolume = NotificationPreferences.DefaultNotificationVolume,
             EnabledNotificationSources = NotificationPreferences.AllNotificationSourcesMask,
-            DmPolicy = dmPolicy
+            DmPolicy = dmPolicy,
+            ForceGpuAcceleration = true
         };
     }
 }

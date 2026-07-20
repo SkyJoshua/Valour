@@ -31,6 +31,7 @@
     private RenderFragment NotificationsContent => @<EditUserNotificationsComponent />;
     private RenderFragment DevicePreferencesContent => @<EditDevicePreferencesComponent />;
     private RenderFragment SecurityContent => @<EditSessionsComponent />;
+    private RenderFragment FederationContent => @<EditFederationMigrationComponent />;
     private RenderFragment LogOutContent => @<div></div>;
     private RenderFragment OAuthContent => @<EditOAuthComponent />;
     private RenderFragment BotsContent => @<BotManagementComponent />;
@@ -43,14 +44,20 @@
                 <ReportsQueryTable />
             </TabTwo>
             <TabThree>
-                <StaffVerifyUserComponent />
+                <StaffLookupComponent />
             </TabThree>
             <TabFour>
-                <StaffEmailComponent />
+                <StaffAuditLogComponent />
             </TabFour>
+            <TabFive>
+                <StaffVerifyUserComponent />
+            </TabFive>
+            <TabSix>
+                <StaffEmailComponent />
+            </TabSix>
         </TabContainerComponent>;
 
-    private readonly string[] _staffTabs = new[] { "Members", "Reports", "Verify", "Email Users" };
+    private readonly string[] _staffTabs = new[] { "Members", "Reports", "Lookup", "Audit", "Verify", "Email Users" };
 
     private List<MainMenu.MenuCategory> _categories;
 
@@ -135,6 +142,13 @@
                     },
                     new MainMenu.MenuItem()
                     {
+                        Name = "Self-Hosting",
+                        Icon = "hdd-network-fill",
+                        Description = "Import and manage planet migrations",
+                        Content = FederationContent
+                    },
+                    new MainMenu.MenuItem()
+                    {
                         Name = "Log Out",
                         Icon = "x-octagon-fill",
                         Color = "var(--color-danger)",
@@ -189,6 +203,12 @@
         }
 
         _categories = BuildCategories();
+
+        // Federation account flows are hub-side. A standalone or destination
+        // node used to show controls that could only return a 404, which made
+        // migration setup look supported when it was not.
+        if (Client.InstanceManifest?.Capabilities?.FederationHub != true)
+            _categories[0].Items.RemoveAll(x => x.Name == "Self-Hosting");
 
         // Add staff category if user is staff
         if (Data.User?.ValourStaff == true)

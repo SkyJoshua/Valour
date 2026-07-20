@@ -188,7 +188,8 @@ public class ChannelApi
     {
         var userId = await userService.GetCurrentUserIdAsync();
 
-        if (create)
+        // Block and DM-policy checks don't apply when messaging yourself
+        if (create && userId != otherUserId)
         {
             // Check blocks: if either user has blocked the other, forbid
             if (await userBlockService.IsBlockedEitherWayAsync(userId, otherUserId))
@@ -336,7 +337,7 @@ public class ChannelApi
         {
             await typingService.AddCurrentlyTyping(channelId, token.UserId);
         } 
-        catch (Exception ex)
+        catch (Exception)
         {
             return ValourResult.Problem("Failed to update typing state");
         }
@@ -375,8 +376,10 @@ public class ChannelApi
         }
 
         var updated = await stateService.UpdateReadState(channelId, token.UserId, channel.PlanetId, memberId, request.UpdateTime);
+        if (!updated.Success)
+            return ValourResult.Problem(updated.Message);
 
-        return ValourResult.Json(updated);
+        return ValourResult.Json(updated.Data);
     }
     
     [ValourRoute(HttpVerbs.Get, "api/planets/{planetId}/channels/{channelId}/messages")]

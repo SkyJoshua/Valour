@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Collections;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
@@ -36,6 +37,7 @@ public class Node : ServiceBase // each node acts like a service
     /// True if this node is currently reconnecting
     /// </summary>
     public bool IsReconnecting { get; private set; }
+    private int _reconnectInProgress;
 
     /// <summary>
     /// True if this is the primary node for this client
@@ -77,6 +79,105 @@ public class Node : ServiceBase // each node acts like a service
         _nodeService = client.NodeService;
     }
 
+    // ===== Federation: external community-node support =====
+    // When set, this Node points at a community node on a different origin and
+    // authenticates with a federation-exchanged, node-local token instead of
+    // the client's primary token + X-Server-Select routing header.
+    private string _externalBaseUrl;
+    private string _externalToken;
+    private DateTime? _externalTokenExpiresAt;
+    private bool _externalInsecure;
+
+    /// <summary>True when this node is an external community (federated) node.</summary>
+    public bool IsExternal => _externalBaseUrl is not null;
+
+    /// <summary>Whether the node-local federation session is close to expiry.</summary>
+    public bool NeedsFederationSessionRefresh =>
+        IsExternal && (!_externalTokenExpiresAt.HasValue ||
+                       _externalTokenExpiresAt.Value <= DateTime.UtcNow.AddMinutes(5));
+
+    internal bool ExternalInsecure => _externalInsecure;
+
+    /// <summary>Base URL for this node's requests (trailing slash): the external community origin, or the client's own.</summary>
+    public string NodeBaseAddress => _externalBaseUrl ?? Client.BaseAddress;
+
+    /// <summary>Auth token for this node: the node-local exchanged token, or the client's primary token.</summary>
+    private string NodeAuthToken => _externalToken ?? Client.AuthService.Token;
+
+    /// <summary>
+    /// Initializes this node as an external community node: HTTP + SignalR go
+    /// to the node's own origin, authenticated by a federation-exchanged token.
+    /// </summary>
+    public async Task<TaskResult> InitializeExternalAsync(
+        string domain,
+        string nodeLocalToken,
+        DateTime tokenExpiresAt,
+        bool insecure = false)
+    {
+        domain = domain?.Trim();
+        if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(nodeLocalToken))
+            return TaskResult.FromFailure("Domain and node token are required.");
+
+        Name = domain;
+        _externalBaseUrl = $"{(insecure ? "http" : "https")}://{domain}/";
+        _externalToken = nodeLocalToken;
+        _externalTokenExpiresAt = tokenExpiresAt;
+        _externalInsecure = insecure;
+
+        SetupLogging(Client.Logger, new LogOptions("Node " + domain, "#8b5cf6", "#fc0356", "#fc8403"));
+        HttpClient = Client.HttpClientProvider?.GetHttpClient() ?? new HttpClient();
+        HttpClient.BaseAddress = new Uri(_externalBaseUrl);
+        // No X-Server-Select for external nodes — that's internal cluster routing.
+        HttpClient.DefaultRequestHeaders.Add("Authorization", nodeLocalToken);
+
+        var setup = await SetupRealtimeConnection();
+        if (!setup.Success)
+        {
+            await DisposeFailedRealtimeConnectionAsync();
+            return setup;
+        }
+
+        // Do not publish a half-initialized external node. Otherwise a failed
+        // first connection is cached and later calls incorrectly treat it as
+        // a usable federation session.
+        Client.NodeService.RegisterNode(this);
+        return setup;
+    }
+
+    /// <summary>
+    /// Replaces an external node token after a hub re-exchange. A full SignalR
+    /// reconnect is intentional: group membership was authorized under the old
+    /// token and must be rebuilt under the refreshed hub grants.
+    /// </summary>
+    public async Task<TaskResult> RefreshExternalTokenAsync(string nodeLocalToken, DateTime tokenExpiresAt)
+    {
+        if (!IsExternal || string.IsNullOrWhiteSpace(nodeLocalToken))
+            return TaskResult.FromFailure("This is not an initialized federated node.");
+
+        _externalToken = nodeLocalToken;
+        _externalTokenExpiresAt = tokenExpiresAt;
+        UpdateToken();
+
+        var hadRealtimeConnection = IsRealtimeSetup;
+        // Nodes with no active planet/channel subscriptions deliberately shut
+        // their realtime connection down. Refresh their HTTP credential, but
+        // do not resurrect an idle SignalR connection just because the token
+        // refresh timer fired.
+        if (!hadRealtimeConnection)
+            return TaskResult.SuccessResult;
+
+        await DisposeFailedRealtimeConnectionAsync();
+
+        var setup = await SetupRealtimeConnection();
+        if (!setup.Success)
+            return setup;
+
+        if (hadRealtimeConnection)
+            await RejoinRealtimeSubscriptionsAsync();
+
+        return TaskResult.SuccessResult;
+    }
+
     public async Task<TaskResult> InitializeAsync(string name, bool isPrimary = false)
     {
         Name = name?.Trim();
@@ -108,7 +209,7 @@ public class Node : ServiceBase // each node acts like a service
 
         // Set header for node
         HttpClient.DefaultRequestHeaders.Add("X-Server-Select", Name);
-        
+
         if (Client.AuthService.Token is null)
         {
             LogWarning("No token found, skipping full node initialization. Only registration will be possible.");
@@ -151,17 +252,55 @@ public class Node : ServiceBase // each node acts like a service
         return TaskResult.SuccessResult;
     }
 
-    public void UpdateToken()
+    /// <summary>
+    /// Closes a partially initialized or superseded realtime connection without
+    /// triggering the automatic reconnect path.
+    /// </summary>
+    private async Task DisposeFailedRealtimeConnectionAsync()
     {
-        if (HttpClient.DefaultRequestHeaders.Authorization is not null)
+        if (HubConnection is null)
         {
-            HttpClient.DefaultRequestHeaders.Remove("Authorization");
+            IsRealtimeSetup = false;
+            return;
         }
-        
-        HttpClient.DefaultRequestHeaders.Add("Authorization", Client.AuthService.Token);
+
+        _intentionalDisconnect = true;
+        try
+        {
+            await HubConnection.StopAsync();
+            await HubConnection.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            LogWarning("Failed to close the federated realtime connection: " + ex.Message);
+        }
+        finally
+        {
+            _onlineTimer?.Dispose();
+            _onlineTimer = null;
+            _intentionalDisconnect = false;
+            HubConnection = null;
+            IsRealtimeSetup = false;
+        }
     }
 
-    private async Task ConnectToUserChannel()
+    /// <summary>
+    /// An external node must never receive user-wide SignalR traffic. Its
+    /// bearer only authorizes a federation membership; planet and channel
+    /// groups are joined explicitly after the membership checks succeed.
+    /// </summary>
+    private Task ConnectToUserChannel()
+    {
+        if (IsExternal)
+        {
+            Log("Skipping user-wide SignalR group on external node.");
+            return Task.CompletedTask;
+        }
+
+        return ConnectToUserChannelInternal();
+    }
+
+    private async Task ConnectToUserChannelInternal()
     {
         TaskResult userResult;
         int tries = 0;
@@ -182,12 +321,24 @@ public class Node : ServiceBase // each node acts like a service
         Log("Connected to user channel for SignalR.");
     }
 
+    public void UpdateToken()
+    {
+        if (HttpClient.DefaultRequestHeaders.Authorization is not null)
+        {
+            HttpClient.DefaultRequestHeaders.Remove("Authorization");
+        }
+
+        HttpClient.DefaultRequestHeaders.Add("Authorization", NodeAuthToken);
+    }
+
     public async Task<TaskResult> ConnectToPlanetRealtime(Planet planet)
     {
         // Ensure the node is set up for real-time communication
         if (!IsRealtimeSetup)
         {
-            await SetupRealtimeConnection();
+            var setup = await SetupRealtimeConnection();
+            if (!setup.Success)
+                return setup;
         }
 
         // Ensure this node is the correct node for the planet
@@ -198,13 +349,14 @@ public class Node : ServiceBase // each node acts like a service
             return TaskResult.FromFailure("Incorrect node for planet.");
         }
 
-        if (HubConnection.State != HubConnectionState.Connected)
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
         {
-            LogError($"Cannot join planet {planet.Id} - hub connection is not active (State: {HubConnection.State})");
+            LogError($"Cannot join planet {planet.Id} - hub connection is not active (State: {hubConnection?.State})");
             return TaskResult.FromFailure("Hub connection is not active.");
         }
 
-        var result = await HubConnection.InvokeAsync<TaskResult>("JoinPlanet", planet.Id);
+        var result = await hubConnection.InvokeAsync<TaskResult>("JoinPlanet", planet.Id);
 
         if (result.Success)
         {
@@ -226,9 +378,7 @@ public class Node : ServiceBase // each node acts like a service
         if (_realtimePlanets.Count == 0 && _realtimeChannels.Count == 0)
         {
             Log("No more realtime connections. Disconnecting from SignalR.");
-            _intentionalDisconnect = true;
-            await HubConnection.StopAsync();
-            IsRealtimeSetup = false;
+            await DisposeFailedRealtimeConnectionAsync();
         }
     }
     
@@ -246,15 +396,16 @@ public class Node : ServiceBase // each node acts like a service
             return TaskResult.FromFailure("Node is not connected to planet.");
         }
 
-        if (HubConnection.State != HubConnectionState.Connected)
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
         {
-            LogError($"Cannot leave planet {planet.Id} - hub connection is not active (State: {HubConnection.State})");
+            LogError($"Cannot leave planet {planet.Id} - hub connection is not active (State: {hubConnection?.State})");
             _realtimePlanets.TryRemove(planet.Id, out _);
             await CheckShouldDisconnect();
             return TaskResult.FromFailure("Hub connection is not active.");
         }
 
-        var result = await HubConnection.InvokeAsync<TaskResult>("LeavePlanet", planet.Id);
+        var result = await hubConnection.InvokeAsync<TaskResult>("LeavePlanet", planet.Id);
 
         if (result.Success)
         {
@@ -277,7 +428,9 @@ public class Node : ServiceBase // each node acts like a service
         // Ensure the node is set up for real-time communication
         if (!IsRealtimeSetup)
         {
-            await SetupRealtimeConnection();
+            var setup = await SetupRealtimeConnection();
+            if (!setup.Success)
+                return setup;
         }
 
         // Ensure this node is the correct node for the channel
@@ -288,13 +441,14 @@ public class Node : ServiceBase // each node acts like a service
             return TaskResult.FromFailure("Incorrect node for channel.");
         }
 
-        if (HubConnection.State != HubConnectionState.Connected)
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
         {
-            LogError($"Cannot join channel {channel.Id} - hub connection is not active (State: {HubConnection.State})");
+            LogError($"Cannot join channel {channel.Id} - hub connection is not active (State: {hubConnection?.State})");
             return TaskResult.FromFailure("Hub connection is not active.");
         }
 
-        var result = await HubConnection.InvokeAsync<TaskResult>("JoinChannel", channel.Id);
+        var result = await hubConnection.InvokeAsync<TaskResult>("JoinChannel", channel.Id);
 
         if (result.Success)
         {
@@ -318,15 +472,16 @@ public class Node : ServiceBase // each node acts like a service
             return TaskResult.FromFailure("Node is not connected to channel.");
         }
 
-        if (HubConnection.State != HubConnectionState.Connected)
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
         {
-            LogError($"Cannot leave channel {channel.Id} - hub connection is not active (State: {HubConnection.State})");
+            LogError($"Cannot leave channel {channel.Id} - hub connection is not active (State: {hubConnection?.State})");
             _realtimeChannels.TryRemove(channel.Id, out _);
             await CheckShouldDisconnect();
             return TaskResult.FromFailure("Hub connection is not active.");
         }
 
-        var result = await HubConnection.InvokeAsync<TaskResult>("LeaveChannel", channel.Id);
+        var result = await hubConnection.InvokeAsync<TaskResult>("LeaveChannel", channel.Id);
 
         if (result.Success)
         {
@@ -341,7 +496,11 @@ public class Node : ServiceBase // each node acts like a service
     public async Task<TaskResult> RefreshActiveChannelView(long channelId)
     {
         if (!IsRealtimeSetup)
-            await SetupRealtimeConnection();
+        {
+            var setup = await SetupRealtimeConnection();
+            if (!setup.Success)
+                return setup;
+        }
 
         if (HubConnection?.State != HubConnectionState.Connected)
             return TaskResult.FromFailure("Hub connection is not active.");
@@ -363,6 +522,7 @@ public class Node : ServiceBase // each node acts like a service
     private void BeginPings()
     {
         Log("Beginning online pings...");
+        _onlineTimer?.Dispose();
         _onlineTimer = new Timer(OnPingTimer, null, TimeSpan.Zero, TimeSpan.FromSeconds(60));
     }
 
@@ -381,10 +541,14 @@ public class Node : ServiceBase // each node acts like a service
     {
         try
         {
-            if (HubConnection.State != HubConnectionState.Connected)
+            var hubConnection = HubConnection;
+            if (!IsRealtimeSetup || hubConnection is null)
+                return;
+
+            if (hubConnection.State != HubConnectionState.Connected)
             {
-                LogError($"Ping failed. Hub state is: {HubConnection.State.ToString()}");
-                if (HubConnection.State == HubConnectionState.Disconnected)
+                LogError($"Ping failed. Hub state is: {hubConnection.State.ToString()}");
+                if (hubConnection.State == HubConnectionState.Disconnected)
                 {
                     _ = Reconnect();
                 }
@@ -395,7 +559,7 @@ public class Node : ServiceBase // each node acts like a service
 
             _pingStopwatch.Reset();
             _pingStopwatch.Start();
-            var response = await HubConnection.InvokeAsync<string>("ping", IsPrimary);
+            var response = await hubConnection.InvokeAsync<string>("ping", IsPrimary);
             _pingStopwatch.Stop();
 
             if (response == "pong")
@@ -444,14 +608,15 @@ public class Node : ServiceBase // each node acts like a service
 
     private async Task ConnectSignalRHub()
     {
-        var address = Client.BaseAddress + "hubs/core";
+        var address = NodeBaseAddress + "hubs/core";
 
         Log("Connecting to Core hub at " + address);
 
         HubConnection = new HubConnectionBuilder()
             .WithUrl(address, options => {
                 {
-                    options.Headers.Add("X-Server-Select", Name);
+                    if (!IsExternal)
+                        options.Headers.Add("X-Server-Select", Name);
                     options.UseStatefulReconnect = true;
                     
                     // Support in-memory testing
@@ -493,12 +658,17 @@ public class Node : ServiceBase // each node acts like a service
 
             try
             {
-                response = await HubConnection.InvokeAsync<TaskResult>("Authorize", Client.AuthService.Token);
+                response = await HubConnection.InvokeAsync<TaskResult>("Authorize", NodeAuthToken);
                 authorized = response.Success;
 
-                // Token invalid or expired. Clear 
+                // Token invalid or expired — clear local auth state and surface the event.
                 if (response.Code == 401)
                 {
+                    if (IsExternal)
+                        InvalidateExternalSession("SignalR authorization was rejected.");
+                    else
+                        Client.AuthService.HandleTokenInvalidated();
+
                     return response;
                 }
             }
@@ -534,14 +704,80 @@ public class Node : ServiceBase // each node acts like a service
     private void OnModelUpdate<TModel>(TModel model, int flags)
         where TModel : ClientModel<TModel>
     {
+        if (!AcceptsExternalModelEvent(model))
+            return;
+
         model.Sync(Client);
     }
 
     private void OnModelDelete<TModel>(TModel model)
         where TModel : ClientModel<TModel>
     {
+        if (!AcceptsExternalModelEvent(model))
+            return;
+
         model.Destroy(Client);
     }
+
+    /// <summary>
+    /// External nodes are separate trust domains. Only planet-scoped models
+    /// for a planet this connection has actually joined may mutate the shared
+    /// client cache. User, notification, DM, and account models are hub-only.
+    /// </summary>
+    internal bool AcceptsExternalPlanetRealtimeEvent(long? planetId) =>
+        !IsExternal || (planetId.HasValue && _realtimePlanets.ContainsKey(planetId.Value));
+
+    /// <summary>
+    /// Reactions and embed updates do not carry a planet id, so authorize them
+    /// against their already-cached message before delivering them.
+    /// </summary>
+    internal bool AcceptsExternalMessageRealtimeEvent(long messageId)
+    {
+        if (!IsExternal)
+            return true;
+
+        return Client.Cache.Messages.TryGet(messageId, Name, out var message) &&
+               AcceptsExternalPlanetRealtimeEvent(message?.PlanetId);
+    }
+
+    /// <summary>
+    /// Marks only this community-node session stale. A federation node cannot
+    /// revoke the user's independently authenticated hub session.
+    /// </summary>
+    internal void InvalidateExternalSession(string reason)
+    {
+        if (!IsExternal)
+            return;
+
+        _externalTokenExpiresAt = DateTime.UtcNow;
+        LogWarning("External federation session was invalidated: " + (reason ?? "unspecified reason"));
+
+        // Do not retain a connection that the node says is no longer valid.
+        // The session refresh path obtains a new node-local token from the hub.
+        _ = DisposeFailedRealtimeConnectionAsync();
+    }
+
+    private bool AcceptsExternalModelEvent<TModel>(TModel model)
+        where TModel : ClientModel<TModel>
+    {
+        if (!IsExternal)
+            return true;
+
+        return model switch
+        {
+            Planet planet => AcceptsExternalPlanetRealtimeEvent(planet.Id),
+            ISharedPlanetModel planetModel => AcceptsExternalPlanetRealtimeEvent(planetModel.PlanetId),
+            ISharedMessage message => AcceptsExternalPlanetRealtimeEvent(message.PlanetId),
+            ISharedChannel channel => AcceptsExternalPlanetRealtimeEvent(channel.PlanetId),
+            _ => false,
+        };
+    }
+
+    private static bool IsExternalRealtimeModelType(Type modelType) =>
+        modelType == typeof(Planet) ||
+        typeof(ISharedPlanetModel).IsAssignableFrom(modelType) ||
+        typeof(ISharedMessage).IsAssignableFrom(modelType) ||
+        typeof(ISharedChannel).IsAssignableFrom(modelType);
 
     private static bool IsSubclassOfRawGeneric(Type genericBaseType, Type toCheck)
     {
@@ -581,6 +817,12 @@ public class Node : ServiceBase // each node acts like a service
 
         foreach (var type in derivedTypes)
         {
+            if (IsExternal && !IsExternalRealtimeModelType(type))
+            {
+                Log($"Skipped non-planet ClientModel type from external node: {type.Name}");
+                continue;
+            }
+
             try
             {
                 var modelType = type; // TModel
@@ -602,9 +844,17 @@ public class Node : ServiceBase // each node acts like a service
             }
         }
         
-        HubConnection.On<Notification>("RelayNotification", Client.NotificationService.OnNotificationReceived);
-        HubConnection.On("RelayNotificationsCleared", Client.NotificationService.OnNotificationsCleared);
-        HubConnection.On<FriendEventData>("RelayFriendEvent", Client.FriendService.OnFriendEventReceived);
+        if (IsExternal)
+        {
+            HubConnection.On<string>("ForceLogout", reason => InvalidateExternalSession(reason));
+        }
+        else
+        {
+            HubConnection.On<Notification>("RelayNotification", Client.NotificationService.OnNotificationReceived);
+            HubConnection.On("RelayNotificationsCleared", Client.NotificationService.OnNotificationsCleared);
+            HubConnection.On<FriendEventData>("RelayFriendEvent", Client.FriendService.OnFriendEventReceived);
+            HubConnection.On<string>("ForceLogout", reason => Client.AuthService.HandleTokenInvalidated(reason));
+        }
 
 
         Log("Item Events hooked.");
@@ -713,51 +963,69 @@ public class Node : ServiceBase // each node acts like a service
     /// </summary>
     private async Task Reconnect()
     {
-        if (IsReconnecting)
+        if (Interlocked.CompareExchange(ref _reconnectInProgress, 1, 0) != 0)
             return;
 
         IsReconnecting = true;
-
         try
         {
-            // Test connection if it thinks it's safe
-            if (HubConnection.State == HubConnectionState.Connected)
-            {
-                _ = await HubConnection.InvokeAsync<string>("ping");
-            }
-        }
-        catch (System.Exception ex)
-        {
-            LogError("Hub reports connection, but ping failed. Will attempt reconnect...", ex);
-            try
-            {
-                await HubConnection.StopAsync();
-            }
-            catch (System.Exception stopEx)
-            {
-                LogError("Failed to stop SignalR after ping failure.", stopEx);
-            }
-        }
-
-        while (HubConnection.State == HubConnectionState.Disconnected)
-        {
-            await Task.Delay(3000);
-
-            Log("Reconnecting to Core Hub...");
+            // Keep a stable connection reference. Token refresh and force
+            // logout deliberately dispose the old connection; a stale
+            // reconnect loop must never revive or operate on that connection.
+            var hubConnection = HubConnection;
+            if (hubConnection is null || _intentionalDisconnect)
+                return;
 
             try
             {
-                await HubConnection.StartAsync();
+                // Test connection if it thinks it's safe
+                if (hubConnection.State == HubConnectionState.Connected)
+                    _ = await hubConnection.InvokeAsync<string>("ping");
             }
             catch (System.Exception ex)
             {
-                LogError("Failed to reconnect... waiting three seconds to continue.", ex);
+                LogError("Hub reports connection, but ping failed. Will attempt reconnect...", ex);
+                try
+                {
+                    await hubConnection.StopAsync();
+                }
+                catch (System.Exception stopEx)
+                {
+                    LogError("Failed to stop SignalR after ping failure.", stopEx);
+                }
+            }
+
+            while (ReferenceEquals(HubConnection, hubConnection) && !_intentionalDisconnect &&
+                   hubConnection.State == HubConnectionState.Disconnected)
+            {
+                await Task.Delay(3000);
+
+                if (!ReferenceEquals(HubConnection, hubConnection) || _intentionalDisconnect)
+                    return;
+
+                Log("Reconnecting to Core Hub...");
+
+                try
+                {
+                    await hubConnection.StartAsync();
+                }
+                catch (System.Exception ex)
+                {
+                    LogError("Failed to reconnect... waiting three seconds to continue.", ex);
+                }
+            }
+
+            if (ReferenceEquals(HubConnection, hubConnection) && !_intentionalDisconnect &&
+                hubConnection.State == HubConnectionState.Connected)
+            {
+                await OnHubReconnect("Success");
             }
         }
-
-        await OnHubReconnect("Success");
-
-        IsReconnecting = false;
+        finally
+        {
+            IsReconnecting = false;
+            Volatile.Write(ref _reconnectInProgress, 0);
+        }
     }
 
     /// <summary>
@@ -802,15 +1070,28 @@ public class Node : ServiceBase // each node acts like a service
     public async Task HandleReconnect()
     {
         // Authenticate and connect to personal channel
-        await AuthenticateSignalR();
-        await ConnectToUserSignalRChannel();
+        var authorization = await AuthenticateSignalR();
+        if (!authorization.Success)
+            return;
+
+        await ConnectToUserChannel();
+
+        await RejoinRealtimeSubscriptionsAsync();
+    }
+
+    /// <summary>Rejoins subscriptions after a deliberate token refresh or transport reconnect.</summary>
+    private async Task RejoinRealtimeSubscriptionsAsync()
+    {
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
+            return;
 
         // Rejoin all previously connected planets
         foreach (var planetId in _realtimePlanets.Keys)
         {
             try
             {
-                var result = await HubConnection.InvokeAsync<TaskResult>("JoinPlanet", planetId);
+                var result = await hubConnection.InvokeAsync<TaskResult>("JoinPlanet", planetId);
                 if (result.Success)
                 {
                     Log($"Rejoined planet {planetId} after reconnect");
@@ -831,7 +1112,7 @@ public class Node : ServiceBase // each node acts like a service
         {
             try
             {
-                var result = await HubConnection.InvokeAsync<TaskResult>("JoinChannel", channelId);
+                var result = await hubConnection.InvokeAsync<TaskResult>("JoinChannel", channelId);
                 if (result.Success)
                 {
                     Log($"Rejoined channel {channelId} after reconnect");
@@ -850,13 +1131,14 @@ public class Node : ServiceBase // each node acts like a service
 
     private async Task<TaskResult> ConnectToUserSignalRChannel()
     {
-        if (HubConnection.State != HubConnectionState.Connected)
+        var hubConnection = HubConnection;
+        if (hubConnection?.State != HubConnectionState.Connected)
         {
             LogError("Cannot join user channel - hub connection is not active.");
             return TaskResult.FromFailure("Hub connection is not active.");
         }
 
-        return await HubConnection.InvokeAsync<TaskResult>("JoinUser", IsPrimary);
+        return await hubConnection.InvokeAsync<TaskResult>("JoinUser", IsPrimary);
     }
 
     #endregion
@@ -868,13 +1150,34 @@ public class Node : ServiceBase // each node acts like a service
         if (string.IsNullOrEmpty(info))
             return (null, null);
 
-        var parts = info.Split(':');
-        return (parts[0], parts.Length > 1 ? long.Parse(parts[1]) : null);
+        var parts = info.Trim().Split(':', 2);
+        var node = parts[0].Trim();
+        if (string.IsNullOrWhiteSpace(node))
+            return (null, null);
+
+        if (parts.Length == 1)
+            return (node, null);
+
+        return long.TryParse(parts[1], out var planetId) && planetId > 0
+            ? (node, planetId)
+            : (null, null);
     }
 
     private async Task<Node> HandleMisdirect(HttpResponseMessage response, string method, string uri)
     {
+        // A community node is a separate trust domain. It must not be able to
+        // direct the SDK into the hub's internal X-Server-Select routing path
+        // or poison the hub's planet-to-node cache with a crafted 421 body.
+        if (IsExternal)
+        {
+            LogWarning($"Ignoring a 421 response from external node {Name} for {method} {uri}.");
+            return null;
+        }
+
         var info = ReadMisdirectInfo(await response.Content.ReadAsStringAsync());
+        if (info.node is null)
+            return null;
+
         LogError(
             $"Wrong node! {method} {uri} - {Name} is not the correct node for this request. Forwarding to {info}.");
 
@@ -893,9 +1196,14 @@ public class Node : ServiceBase // each node acts like a service
     )
     {
         var cache = LazyGetRequestCache<T>.Cache;
+        // The cache is static per response type. A bare relative route lets a
+        // response from one community origin satisfy a request to the hub (or
+        // another community) for the short cache window. Scope it to the
+        // actual origin instead.
+        var cacheKey = NodeBaseAddress + uri;
 
         // 1) Check if we already have a Lazy<Task<TaskResult<T>>> in the dictionary.
-        if (cache.TryGetValue(uri, out var existingLazy))
+        if (cache.TryGetValue(cacheKey, out var existingLazy))
         {
             // If so, just await the same task (reuse it).
             return await existingLazy.Value;
@@ -907,7 +1215,7 @@ public class Node : ServiceBase // each node acts like a service
         );
 
         // 3) Attempt to add our new Lazy to the dictionary.
-        if (cache.TryAdd(uri, newLazy))
+        if (cache.TryAdd(cacheKey, newLazy))
         {
             try
             {
@@ -917,12 +1225,12 @@ public class Node : ServiceBase // each node acts like a service
                 if (cacheDurationMs is not null)
                 {
                     // 4A) Schedule removal from the cache after "cacheDurationMs".
-                    _ = Task.Delay(cacheDurationMs.Value).ContinueWith(_ => { cache.TryRemove(uri, out var _); });
+                    _ = Task.Delay(cacheDurationMs.Value).ContinueWith(_ => { cache.TryRemove(cacheKey, out var _); });
                 }
                 else
                 {
                     // 4B) Or remove it immediately if no cache duration was specified.
-                    cache.TryRemove(uri, out var _);
+                    cache.TryRemove(cacheKey, out var _);
                 }
 
                 return result;
@@ -930,14 +1238,14 @@ public class Node : ServiceBase // each node acts like a service
             catch
             {
                 // If the underlying request fails, remove from dictionary so the next call can retry.
-                cache.TryRemove(uri, out _);
+                cache.TryRemove(cacheKey, out _);
                 throw;
             }
         }
         else
         {
             // Another thread beat us to it, so we just await the existing task.
-            return await cache[uri].Value;
+            return await cache[cacheKey].Value;
         }
     }
 
@@ -955,11 +1263,13 @@ public class Node : ServiceBase // each node acts like a service
         try
         {
             var response =
-                await HttpClient.GetAsync(Client.BaseAddress + uri, HttpCompletionOption.ResponseHeadersRead);
+                await HttpClient.GetAsync(NodeBaseAddress + uri, HttpCompletionOption.ResponseHeadersRead);
             if (response.IsSuccessStatusCode)
             {
                 return await TryDeserializeResponse<T>(response, uri);
             }
+
+            NotifyIfUnauthorized(response);
 
             // Handle 404 if allowed
             if (response.StatusCode == HttpStatusCode.NotFound && allow404)
@@ -1008,11 +1318,13 @@ public class Node : ServiceBase // each node acts like a service
         try
         {
             var response =
-                await HttpClient.GetAsync(Client.BaseAddress + uri, HttpCompletionOption.ResponseHeadersRead);
+                await HttpClient.GetAsync(NodeBaseAddress + uri, HttpCompletionOption.ResponseHeadersRead);
             var msg = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
                 return TaskResult<string>.FromData(msg);
+
+            NotifyIfUnauthorized(response);
 
             // Handle 404 if allowed
             if (response.StatusCode == HttpStatusCode.NotFound && allow404)
@@ -1061,17 +1373,19 @@ public class Node : ServiceBase // each node acts like a service
 
         try
         {
-            var response = await HttpClient.PutAsync(Client.BaseAddress + uri, jsonContent);
+            var response = await HttpClient.PutAsync(NodeBaseAddress + uri, jsonContent);
 
             if (response.IsSuccessStatusCode)
                 return await TryDeserializeResponse<T>(response, uri);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
             {
                 var correctNode = await HandleMisdirect(response, "PUT", uri);
                 if (correctNode is not null)
-                    return await correctNode.PutAsyncWithResponse<T>(uri, retries + 1);
+                    return await correctNode.PutAsyncWithResponse<T>(uri, content, retries + 1);
 
                 return TaskResult<T>.FromFailure("Failed to find correct node.");
             }
@@ -1108,29 +1422,31 @@ public class Node : ServiceBase // each node acts like a service
 
         try
         {
-            var response = await HttpClient.PostAsync(Client.BaseAddress + uri, jsonContent);
+            var response = await HttpClient.PostAsync(NodeBaseAddress + uri, jsonContent);
 
             if (response.IsSuccessStatusCode)
                 return await TryDeserializeResponse<T>(response, uri);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
             {
                 var correctNode = await HandleMisdirect(response, "POST", uri);
                 if (correctNode is not null)
-                    return await correctNode.PostAsyncWithResponse<T>(uri, retries + 1);
+                    return await correctNode.PostAsyncWithResponse<T>(uri, content, retries + 1);
 
                 return TaskResult<T>.FromFailure("Failed to find correct node.");
             }
 
             var msg = await response.Content.ReadAsStringAsync();
             LogError($"{response.StatusCode} - POST {uri}: \n{msg}");
-            
+
             // if it's a 400, we can use the msg as the error message
             var s = (int)response.StatusCode;
             if (s > 399 && s < 500)
                 return TaskResult<T>.FromFailure(msg, (int)response.StatusCode);
-            
+
             return TaskResult<T>.FromFailure($"Error POSTing data to {uri}", (int)response.StatusCode, msg);
         }
         catch (HttpRequestException ex)
@@ -1153,10 +1469,12 @@ public class Node : ServiceBase // each node acts like a service
 
         try
         {
-            var response = await HttpClient.PostAsync(Client.BaseAddress + uri, null);
+            var response = await HttpClient.PostAsync(NodeBaseAddress + uri, null);
 
             if (response.IsSuccessStatusCode)
                 return await TryDeserializeResponse<T>(response, uri);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
@@ -1170,7 +1488,7 @@ public class Node : ServiceBase // each node acts like a service
 
             var msg = await response.Content.ReadAsStringAsync();
             LogError($"{response.StatusCode} - POST {uri}: \n{msg}");
-            
+
             // if it's a 400, we can use the msg as the error message
             var s = (int)response.StatusCode;
             if (s > 399 && s < 500)
@@ -1199,7 +1517,7 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
     try
     {
         // Use the MultipartFormDataContent directly without converting to JSON
-        var response = await HttpClient.PostAsync(Client.BaseAddress + uri, content);
+        var response = await HttpClient.PostAsync(NodeBaseAddress + uri, content);
 
         if (response.IsSuccessStatusCode)
         {
@@ -1215,6 +1533,8 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
                 return await TryDeserializeResponse<T>(response, uri);
             }
         }
+
+        NotifyIfUnauthorized(response);
 
         // Wrong node! it returned the correct node name so we can actually forward this.
         if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
@@ -1259,11 +1579,13 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
 
         try
         {
-            var response = await HttpClient.PutAsync(Client.BaseAddress + uri, stringContent);
+            var response = await HttpClient.PutAsync(NodeBaseAddress + uri, stringContent);
             var msg = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
                 return TaskResult.FromSuccess(msg);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
@@ -1306,18 +1628,20 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
 
         try
         {
-            var response = await HttpClient.PostAsync(Client.BaseAddress + uri, stringContent);
+            var response = await HttpClient.PostAsync(NodeBaseAddress + uri, stringContent);
             var msg = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
                 return TaskResult.FromSuccess(msg);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
             {
                 var correctNode = await HandleMisdirect(response, "POST", uri);
                 if (correctNode is not null)
-                    return await correctNode.PostAsync(uri, retries + 1);
+                    return await correctNode.PostAsync(uri, content, retries + 1);
 
                 return TaskResult.FromFailure("Failed to find correct node.");
             }
@@ -1354,11 +1678,13 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
 
         try
         {
-            var response = await HttpClient.PostAsync(Client.BaseAddress + uri, jsonContent);
+            var response = await HttpClient.PostAsync(NodeBaseAddress + uri, jsonContent);
             var msg = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
                 return TaskResult.FromSuccess(msg);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
@@ -1393,11 +1719,13 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
 
         try
         {
-            var response = await HttpClient.DeleteAsync(Client.BaseAddress + uri);
+            var response = await HttpClient.DeleteAsync(NodeBaseAddress + uri);
             var msg = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
                 return TaskResult.FromSuccess(msg);
+
+            NotifyIfUnauthorized(response);
 
             // Wrong node! it returned the correct node name so we can actually forward this.
             if (response.StatusCode == HttpStatusCode.MisdirectedRequest)
@@ -1419,6 +1747,17 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
         }
     }
 
+    private void NotifyIfUnauthorized(HttpResponseMessage response)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            if (IsExternal)
+                InvalidateExternalSession("HTTP authorization was rejected.");
+            else
+                Client.AuthService.HandleTokenInvalidated();
+        }
+    }
+
     /// <summary>
     /// Attempts to deserialize the JSON response data into the specified type and returns a TaskResult.
     /// </summary>
@@ -1429,12 +1768,101 @@ public async Task<TaskResult<T>> PostMultipartDataWithResponse<T>(string uri, Mu
         {
             var data = await JsonSerializer.DeserializeAsync<T>(await response.Content.ReadAsStreamAsync(),
                 DefaultJsonOptions);
-            return TaskResult<T>.FromData(data);
+            return TaskResult<T>.FromData(BindExternalResponseSource(data));
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
             LogError($"Bad JSON response for {uri}", ex);
             return TaskResult<T>.FromFailure(ex);
+        }
+    }
+
+    /// <summary>
+    /// Planet API payloads do not contain a routable public node name. When a
+    /// response came from a federated origin, bind that provenance before the
+    /// model enters the cache so later reads and realtime subscriptions remain
+    /// on the same external node. All child payloads must already belong to a
+    /// planet that the hub has routed to this exact node; otherwise a malicious
+    /// community server could poison another origin's cache with reused ids.
+    /// </summary>
+    private T BindExternalResponseSource<T>(T data)
+    {
+        if (!IsExternal || data is null)
+            return data;
+
+        BindExternalResponseSourceObject(data);
+        return data;
+    }
+
+    private void BindExternalResponseSourceObject(object data)
+    {
+        if (data is null)
+            return;
+
+        if (data is Planet planet)
+        {
+            EnsureExternalPlanetOwnership(planet.Id, nameof(Planet));
+
+            planet.NodeName = Name;
+            planet.SetNode(this);
+            return;
+        }
+
+        if (data is ISharedPlanetModel planetModel)
+        {
+            EnsureExternalPlanetOwnership(planetModel.PlanetId, data.GetType().Name);
+            return;
+        }
+
+        if (data is ISharedMessage message)
+        {
+            EnsureExternalPlanetOwnership(message.PlanetId, data.GetType().Name);
+
+            // Reply previews are nested models rather than a top-level JSON
+            // payload. Validate them before Message.Sync recursively caches
+            // the preview as well.
+            if (data is Valour.Sdk.Models.Message sdkMessage && sdkMessage.ReplyTo is not null)
+                BindExternalResponseSourceObject(sdkMessage.ReplyTo);
+
+            return;
+        }
+
+        if (data is ISharedChannel channel)
+        {
+            EnsureExternalPlanetOwnership(channel.PlanetId, data.GetType().Name);
+            return;
+        }
+
+        if (data is ISharedChannelState channelState)
+        {
+            EnsureExternalPlanetOwnership(channelState.PlanetId, data.GetType().Name);
+            return;
+        }
+
+        // Remaining ClientModel types (users, preferences, notifications,
+        // direct-message models, etc.) are hub-owned. Never let an external
+        // node return one for a caller to later Sync into a global cache.
+        if (data is ClientModel)
+        {
+            throw new InvalidOperationException(
+                $"External node {Name} returned hub-scoped model {data.GetType().Name}.");
+        }
+
+        if (data is IEnumerable items && data is not string)
+        {
+            foreach (var item in items)
+                BindExternalResponseSourceObject(item);
+        }
+    }
+
+    private void EnsureExternalPlanetOwnership(long? planetId, string payloadType)
+    {
+        if (!planetId.HasValue ||
+            !Client.NodeService.PlanetToNodeName.TryGetValue(planetId.Value, out var domain) ||
+            !string.Equals(domain, Name, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"External node {Name} returned {payloadType} for an unowned planet.");
         }
     }
 

@@ -1,4 +1,4 @@
-#nullable enable
+#nullable enable annotations
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Valour.Client.Components.Threads.Display;
 using Valour.Config.Configs;
 using Valour.Server.Cdn;
+using Valour.Server.Cdn.Storage;
 using Valour.Server.Database;
 using Valour.Server.Services;
 using Valour.Shared.Models;
@@ -19,12 +20,14 @@ public class ThreadViewModel : PageModel
     private readonly ValourDb _db;
     private readonly ThreadService _threadService;
     private readonly CdnMemoryCache _cdnCache;
+    private readonly CdnStorageProvider _cdnStorage;
 
-    public ThreadViewModel(ValourDb db, ThreadService threadService, CdnMemoryCache cdnCache)
+    public ThreadViewModel(ValourDb db, ThreadService threadService, CdnMemoryCache cdnCache, CdnStorageProvider cdnStorage)
     {
         _db = db;
         _threadService = threadService;
         _cdnCache = cdnCache;
+        _cdnStorage = cdnStorage;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -63,7 +66,7 @@ public class ThreadViewModel : PageModel
             return Page();
         }
 
-        PlanetIcon = NormalizeUrl(ISharedPlanet.GetIconUrl(Planet, IconFormat.Webp128));
+        PlanetIcon = PublicThreadPageHelpers.NormalizeMediaUrl(ISharedPlanet.GetIconUrl(Planet, IconFormat.Webp128));
 
         if (!Planet.EnableThreads || !Planet.PublicThreads)
         {
@@ -112,7 +115,7 @@ public class ThreadViewModel : PageModel
             if (attachment?.Location is null)
                 continue;
 
-            var url = await PublicThreadPageHelpers.TryGetSignedUrlAsync(_db, _cdnCache, attachment.Location);
+            var url = await PublicThreadPageHelpers.TryGetSignedUrlAsync(_db, _cdnCache, _cdnStorage, attachment.Location);
             if (url is null)
                 continue;
 
@@ -183,7 +186,7 @@ public class ThreadViewModel : PageModel
         string GetAvatar(long userId)
         {
             users.TryGetValue(userId, out var user);
-            return NormalizeUrl(ISharedUser.GetAvatar(user, AvatarFormat.Webp64));
+            return PublicThreadPageHelpers.NormalizeMediaUrl(ISharedUser.GetAvatar(user, AvatarFormat.Webp64));
         }
 
         Post!.AuthorName = GetName(Thread.AuthorUserId, Thread.AuthorMemberId);
@@ -227,11 +230,4 @@ public class ThreadViewModel : PageModel
             .Select(x => x.Data));
     }
 
-    private static string NormalizeUrl(string url)
-    {
-        if (string.IsNullOrWhiteSpace(url))
-            return url;
-
-        return url.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? url : "/" + url.TrimStart('/');
-    }
 }
