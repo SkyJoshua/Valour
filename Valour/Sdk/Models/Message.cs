@@ -1,6 +1,6 @@
 ﻿using System.Text.Json.Serialization;
 using Valour.Sdk.Client;
-using Valour.Sdk.Models.Messages.Embeds;
+using Valour.Sdk.Models.Embeds;
 using Valour.Shared.Models;
 using Valour.Shared;
 using Valour.Sdk.ModelLogic;
@@ -88,6 +88,21 @@ public class Message : ClientPlanetModel<Message, long>, ISharedMessage
     [JsonIgnore]
     [IgnoreRealtimeChanges]
     public List<string> EditHistory { get; set; }
+
+    /// <summary>
+    /// Non-null when this message was sent through a webhook. Server-managed.
+    /// </summary>
+    public long? WebhookId { get; set; }
+
+    /// <summary>
+    /// Display-name override for webhook messages. Server-managed.
+    /// </summary>
+    public string OverrideName { get; set; }
+
+    /// <summary>
+    /// Avatar override for webhook messages. Server-managed.
+    /// </summary>
+    public string OverrideAvatarUrl { get; set; }
 
     public async ValueTask<IMessageAuthor> FetchAuthorAsync()
     {
@@ -384,7 +399,7 @@ public class Message : ClientPlanetModel<Message, long>, ISharedMessage
     }
     
     // Alias for CreateAsync
-    public Task<TaskResult<Message>> PostAsync() => 
+    public Task<TaskResult<Message>> PostAsync() =>
         CreateAsync();
 
     public override Message AddToCache(ModelInsertFlags flags = ModelInsertFlags.None)

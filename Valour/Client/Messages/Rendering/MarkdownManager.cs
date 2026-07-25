@@ -29,6 +29,10 @@ public static class MarkdownManager
     {
         Pipeline = new MarkdownPipelineBuilder()
             .DisableHtml()
+            // GetHtml() renders through Markdig's default HtmlRenderer, which does
+            // not go through ValourLinkRenderer - without this, javascript: links
+            // reach embeds, planet descriptions, and rules.
+            .UseSafeLinks()
             .UseAutoLinks(options: new AutoLinkOptions()
             {
                 OpenInNewWindow = true,
@@ -121,7 +125,7 @@ public static class MarkdownManager
             Console.WriteLine("This may be nothing to worry about, a user may have added an insane table or such.");
             Console.WriteLine(e.Message);
         }
-        
+
         return markdown;
     }
 }

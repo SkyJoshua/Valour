@@ -417,6 +417,41 @@ namespace Valour.Database.Migrations
                     b.ToTable("channels", (string)null);
                 });
 
+            modelBuilder.Entity("Valour.Database.ChannelFavorite", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("ChannelId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("channel_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("integer")
+                        .HasColumnName("position");
+
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("UserId", "ChannelId")
+                        .IsUnique();
+
+                    b.ToTable("channel_favorites");
+                });
+
             modelBuilder.Entity("Valour.Database.ChannelMember", b =>
                 {
                     b.Property<long>("Id")
@@ -459,6 +494,10 @@ namespace Valour.Database.Migrations
                     b.Property<string>("Identifier")
                         .HasColumnType("text")
                         .HasColumnName("identifier");
+
+                    b.Property<int>("Iterations")
+                        .HasColumnType("integer")
+                        .HasColumnName("iterations");
 
                     b.Property<byte[]>("Salt")
                         .HasColumnType("bytea")
@@ -1209,6 +1248,16 @@ namespace Valour.Database.Migrations
                         .HasColumnType("character varying(256)")
                         .HasColumnName("import_source");
 
+                    b.Property<string>("OverrideAvatarUrl")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("override_avatar_url");
+
+                    b.Property<string>("OverrideName")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("override_name");
+
                     b.Property<long?>("PlanetId")
                         .HasColumnType("bigint")
                         .HasColumnName("planet_id");
@@ -1220,6 +1269,10 @@ namespace Valour.Database.Migrations
                     b.Property<DateTime>("TimeSent")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("time_sent");
+
+                    b.Property<long?>("WebhookId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("webhook_id");
 
                     b.HasKey("Id");
 
@@ -1781,6 +1834,12 @@ namespace Valour.Database.Migrations
                         .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ActivityNotificationCadence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(2)
+                        .HasColumnName("activity_notification_cadence");
 
                     b.Property<string>("Description")
                         .HasColumnType("text")
@@ -2562,6 +2621,58 @@ namespace Valour.Database.Migrations
                     b.ToTable("planet_voice_configs", (string)null);
                 });
 
+            modelBuilder.Entity("Valour.Database.PlanetWebhook", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("AvatarUrl")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("avatar_url");
+
+                    b.Property<long>("ChannelId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("channel_id");
+
+                    b.Property<long>("CreatorUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("creator_user_id");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("name");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<DateTime>("TimeCreated")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("time_created");
+
+                    b.Property<string>("Token")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("PlanetId");
+
+                    b.HasIndex("Token")
+                        .IsUnique();
+
+                    b.ToTable("planet_webhooks", (string)null);
+                });
+
             modelBuilder.Entity("Valour.Database.PlanetWikiPage", b =>
                 {
                     b.Property<long>("Id")
@@ -2714,6 +2825,43 @@ namespace Valour.Database.Migrations
                     b.HasIndex("PageId", "TimeCreated");
 
                     b.ToTable("planet_wiki_revisions", (string)null);
+                });
+
+            modelBuilder.Entity("Valour.Database.PlatformBannerConfiguration", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Message")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("title");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("UpdatedByUserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("platform_banner_configuration", (string)null);
                 });
 
             modelBuilder.Entity("Valour.Database.PushNotificationSubscription", b =>
@@ -3653,6 +3801,12 @@ namespace Valour.Database.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("channel_id");
 
+                    b.Property<int>("ActivityAlerts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("activity_alerts");
+
                     b.Property<DateTime>("LastViewedTime")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_viewed_time");
@@ -3704,6 +3858,29 @@ namespace Valour.Database.Migrations
                     b.ToTable("user_friends");
                 });
 
+            modelBuilder.Entity("Valour.Database.UserPlanetSetting", b =>
+                {
+                    b.Property<long>("UserId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("PlanetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("planet_id");
+
+                    b.Property<int>("ActivityAlerts")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("activity_alerts");
+
+                    b.HasKey("UserId", "PlanetId");
+
+                    b.HasIndex("PlanetId");
+
+                    b.ToTable("user_planet_settings", (string)null);
+                });
+
             modelBuilder.Entity("Valour.Database.UserPreferences", b =>
                 {
                     b.Property<long>("Id")
@@ -3712,6 +3889,10 @@ namespace Valour.Database.Migrations
                         .HasColumnName("id");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int?>("ActivityCooldownSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("activity_cooldown_seconds");
 
                     b.Property<int>("DmPolicy")
                         .HasColumnType("integer")
@@ -4086,7 +4267,8 @@ namespace Valour.Database.Migrations
 
                     b.HasOne("Valour.Database.Message", "ReplyToMessage")
                         .WithMany("Replies")
-                        .HasForeignKey("ReplyToId");
+                        .HasForeignKey("ReplyToId")
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("AuthorMember");
 
@@ -4364,6 +4546,25 @@ namespace Valour.Database.Migrations
                         .HasForeignKey("Valour.Database.PlanetVoiceConfig", "PlanetId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Planet");
+                });
+
+            modelBuilder.Entity("Valour.Database.PlanetWebhook", b =>
+                {
+                    b.HasOne("Valour.Database.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Valour.Database.Planet", "Planet")
+                        .WithMany()
+                        .HasForeignKey("PlanetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
 
                     b.Navigation("Planet");
                 });

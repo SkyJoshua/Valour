@@ -28,7 +28,7 @@ public static class DevicePreferences
     public static string? MicrophoneDeviceId { get; set; }
     public static string? CameraDeviceId { get; set; }
     public static bool ErrorReportingEnabled { get; private set; }
-    public static bool ForceGpuAcceleration { get; private set; } = true;
+    public static bool ForceGpuAcceleration { get; private set; }
 
     public static async Task SetMicrophoneDeviceId(string? deviceId, IAppStorage localStorage)
     {
@@ -103,8 +103,8 @@ public static class DevicePreferences
             ErrorReportingEnabled = false;
         }
 
-        ForceGpuAcceleration = !await localStorage.ContainsKeyAsync(ForceGpuAccelerationStorageKey)
-            || await localStorage.GetAsync<bool>(ForceGpuAccelerationStorageKey);
+        ForceGpuAcceleration = await localStorage.ContainsKeyAsync(ForceGpuAccelerationStorageKey)
+            && await localStorage.GetAsync<bool>(ForceGpuAccelerationStorageKey);
 
         SentryGate.IsEnabled = ErrorReportingEnabled;
 

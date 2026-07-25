@@ -29,8 +29,8 @@ public abstract class WindowContent
         private set {
             _componentBase = value;
         }
-    }
-    
+        }
+
     public void SetComponent(WindowContentComponentBase componentBase)
     {
         ComponentBase = componentBase;
@@ -127,6 +127,9 @@ public class FloatingWindowProps
 
 public class WindowTab
 {
+    private readonly SemaphoreSlim _contentChangeLock = new(1, 1);
+    private int _historyIndex = -1;
+
     public event Func<Task> OnStartFloating;
     
     /// <summary>
@@ -167,36 +170,85 @@ public class WindowTab
     
     public WindowTab(WindowContent content, FloatingWindowProps floatingProps = null)
     {
+        ArgumentNullException.ThrowIfNull(content);
+
         FloatingProps = floatingProps;
-        
+
         Content = content;
         content.Tab = this;
+        History.Add(content);
+        _historyIndex = 0;
     }
-    
-    public async Task SetContent(WindowContent content)
+
+    public async Task SetContent(WindowContent content, bool recordBrowserHistory = true)
     {
-        var oldContent = Content;
-        
-        Content = content;
-        content.Tab = this;
-        
-        // Render new component. We do this first because it feels
-        // much faster to the user
-        Component?.ReRender();
-        
-        if (oldContent is not null)
+        ArgumentNullException.ThrowIfNull(content);
+
+        await _contentChangeLock.WaitAsync();
+        try
         {
-            // Let old content know it's closing
-            await oldContent.NotifyClosed();
+            if (ReferenceEquals(Content, content))
+                return;
+
+            var oldContent = Content;
+            content.Tab = this;
+
+            // Acquire the incoming content's planet lock before releasing the
+            // outgoing one. This prevents a same-planet channel switch from
+            // briefly disconnecting the planet between components.
+            await content.NotifyOpened();
+
+            if (oldContent is not null)
+                await oldContent.NotifyClosed();
+
+            Content = content;
+            if (recordBrowserHistory)
+            {
+                if (_historyIndex < History.Count - 1)
+                    History.RemoveRange(_historyIndex + 1, History.Count - _historyIndex - 1);
+
+                History.Add(content);
+                _historyIndex = History.Count - 1;
+            }
+
+            await WindowService.NotifyFocusedContentChanged(this, recordBrowserHistory);
+
+            // A mobile navigation can arrive before the WindowComponent has
+            // mounted (most often while restoring a layout or handling a cold
+            // start deep link). Updating the tab alone does not invalidate the
+            // dock's render tree, which leaves the old or empty content visible.
+            // Once mounted, rerendering only this window remains the cheaper path.
+            var dock = Layout?.DockComponent ?? Component?.Dock;
+            if (Component is not null)
+            {
+                Component.ReRender();
+
+                if (dock is not null)
+                    await dock.SaveLayout();
+            }
+            else if (dock is not null)
+            {
+                await dock.NotifyLayoutChanged();
+            }
         }
-        
-        // Let new content know it's opening
-        await content.NotifyOpened();
-        
-        // Let dock know to save new state
-        // Note to future self: this needs to run AFTER the new content
-        // has loaded its properties that need to be saved
-        await Layout.DockComponent.SaveLayout();
+        finally
+        {
+            _contentChangeLock.Release();
+        }
+    }
+
+    internal async Task<bool> NavigateToHistoryAsync(string contentId)
+    {
+        var index = History.FindIndex(x => x.Id == contentId);
+        if (index < 0)
+            return false;
+
+        var content = History[index];
+        if (!ReferenceEquals(Content, content))
+            await SetContent(content, false);
+
+        _historyIndex = index;
+        return true;
     }
 
     public void NotifyLayoutChanged()

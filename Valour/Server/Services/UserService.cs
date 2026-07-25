@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using Valour.Database;
 using Valour.Server.Email;
@@ -79,6 +80,66 @@ public class UserService
     /// </summary>
     public async Task<User> GetAsync(long id) =>
         (await _db.Users.FindAsync(id)).ToModel();
+
+    private readonly record struct UserAccessFlags(bool Disabled, bool ValourStaff, DateTime TimeCached);
+
+    private static readonly ConcurrentDictionary<long, UserAccessFlags> AccessFlagsCache = new();
+    private static readonly TimeSpan AccessFlagsTtl = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Returns the disabled/staff flags for the given user, or null if the user does not exist.
+    /// Checked on every authenticated request, so results are briefly cached in memory;
+    /// the TTL also bounds staleness for flag changes made on other nodes.
+    /// </summary>
+    public async ValueTask<(bool Disabled, bool ValourStaff)?> GetAccessFlagsAsync(long userId)
+    {
+        if (AccessFlagsCache.TryGetValue(userId, out var cached) &&
+            DateTime.UtcNow - cached.TimeCached < AccessFlagsTtl)
+            return (cached.Disabled, cached.ValourStaff);
+
+        var flags = await _db.Users.AsNoTracking()
+            .Where(x => x.Id == userId)
+            .Select(x => new { x.Disabled, x.ValourStaff })
+            .FirstOrDefaultAsync();
+
+        if (flags is null)
+            return null;
+
+        AccessFlagsCache[userId] = new UserAccessFlags(flags.Disabled, flags.ValourStaff, DateTime.UtcNow);
+        return (flags.Disabled, flags.ValourStaff);
+    }
+
+    /// <summary>
+    /// Evicts the cached access flags for a user. Call after changing Disabled or
+    /// ValourStaff, or after deleting the user. Other nodes converge via the cache TTL.
+    /// </summary>
+    public static void InvalidateAccessFlags(long userId) =>
+        AccessFlagsCache.Remove(userId, out _);
+
+    public static void StartAccessFlagsSweepTask()
+    {
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(10));
+
+                    var now = DateTime.UtcNow;
+                    foreach (var entry in AccessFlagsCache)
+                    {
+                        if (now - entry.Value.TimeCached >= AccessFlagsTtl)
+                            AccessFlagsCache.TryRemove(entry.Key, out _);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error sweeping user access flags cache: {ex.Message}");
+                }
+            }
+        });
+    }
 
     /// <summary>Whether this id belongs to a hub-backed federation shadow user.</summary>
     public async Task<bool> IsFederatedAsync(long id) =>
@@ -346,6 +407,7 @@ public class UserService
 
             cred.Salt = salt;
             cred.Secret = hash;
+            cred.Iterations = PasswordManager.CurrentIterations;
 
             _db.Credentials.Update(cred);
             await _db.SaveChangesAsync();
@@ -551,29 +613,53 @@ public class UserService
     /// <summary>
     /// Gets all tokens for a user
     /// </summary>
-    public async Task<List<AuthToken>> GetUserTokensAsync(long userId)
+    /// <summary>
+    /// Lists the user's sessions for session management. Returns a projection that
+    /// omits the token id: the id IS the bearer secret, so returning it here would
+    /// let any token read every other session key on the account.
+    /// </summary>
+    public async Task<List<AuthTokenInfo>> GetUserTokensAsync(long userId, string currentTokenId)
     {
         var tokens = await _db.AuthTokens
             .Where(x => x.UserId == userId)
             .OrderByDescending(x => x.TimeCreated)
-            .Select(x => x.ToModel())
+            .Select(x => new { x.Id, x.AppId, x.Scope, x.TimeCreated, x.TimeExpires })
             .ToListAsync();
 
-        return tokens;
+        return tokens.Select(x => new AuthTokenInfo()
+        {
+            Handle = AuthTokenInfo.GetHandle(x.Id),
+            AppId = x.AppId,
+            Scope = x.Scope,
+            TimeCreated = x.TimeCreated,
+            TimeExpires = x.TimeExpires,
+            IsCurrent = currentTokenId is not null && x.Id == currentTokenId,
+        }).ToList();
     }
 
     /// <summary>
-    /// Revokes a specific token
+    /// Revokes a specific session, addressed by its public handle rather than by
+    /// the token secret (which is never given to clients). The handle is a hash,
+    /// so the match is done in memory over the caller's own tokens.
     /// </summary>
-    public async Task<TaskResult> RevokeTokenAsync(long userId, string tokenId)
+    public async Task<TaskResult> RevokeTokenAsync(long userId, string handle)
     {
         try
         {
-            var token = await _db.AuthTokens
-                .FirstOrDefaultAsync(x => x.Id == tokenId && x.UserId == userId);
+            if (string.IsNullOrWhiteSpace(handle))
+                return new TaskResult(false, "Token not found");
+
+            var userTokens = await _db.AuthTokens
+                .Where(x => x.UserId == userId)
+                .ToListAsync();
+
+            var token = userTokens.FirstOrDefault(x =>
+                string.Equals(AuthTokenInfo.GetHandle(x.Id), handle, StringComparison.OrdinalIgnoreCase));
 
             if (token is null)
                 return new TaskResult(false, "Token not found");
+
+            var tokenId = token.Id;
 
             _db.AuthTokens.Remove(token);
             await _db.SaveChangesAsync();
@@ -710,13 +796,35 @@ public class UserService
             return new TaskResult<User>(false, "The credentials were incorrect.", null);
         }
 
-        // Use salt to validate secret hash
-        byte[] hash = PasswordManager.GetHashForPassword(secret, credential.Salt);
+        // Rows written before iteration tracking existed have 0 here and were
+        // hashed with the legacy count.
+        var iterations = credential.Iterations > 0
+            ? credential.Iterations
+            : PasswordManager.LegacyIterations;
 
-        // Spike needs to remember how reference types work 
-        if (!hash.SequenceEqual(credential.Secret))
+        // Use salt to validate secret hash
+        byte[] hash = PasswordManager.GetHashForPassword(secret, credential.Salt, iterations);
+
+        if (!PasswordManager.HashesMatch(hash, credential.Secret))
         {
             return new TaskResult<User>(false, "The credentials were incorrect.", null);
+        }
+
+        // The password is correct and we have the plaintext here, so this is the
+        // only moment we can raise the work factor without a reset.
+        if (iterations < PasswordManager.CurrentIterations)
+        {
+            try
+            {
+                credential.Secret = PasswordManager.GetHashForPassword(secret, credential.Salt);
+                credential.Iterations = PasswordManager.CurrentIterations;
+                await _db.SaveChangesAsync();
+            }
+            catch (Exception e)
+            {
+                // An upgrade failure must never block a valid login.
+                _logger.LogError(e, "Failed to upgrade password hash for user {UserId}", credential.UserId);
+            }
         }
 
         User user = await GetAsync(credential.UserId);
@@ -769,6 +877,7 @@ public class UserService
         
         cred.Salt = salt;
         cred.Secret = hash;
+        cred.Iterations = PasswordManager.CurrentIterations;
         
         try
         {
@@ -1191,6 +1300,9 @@ public class UserService
             var gifFavorites = _db.GifFavorites.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
             _db.GifFavorites.RemoveRange(gifFavorites);
 
+            var channelFavorites = _db.ChannelFavorites.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
+            _db.ChannelFavorites.RemoveRange(channelFavorites);
+
             await _db.SaveChangesAsync();
             
             // Remove eco stuff
@@ -1212,10 +1324,6 @@ public class UserService
             await _db.OldPlanetRoleMembers.IgnoreQueryFilters()
                 .Where(x => x.UserId == dbUser.Id)
                 .ExecuteDeleteAsync();
-
-            // Remove member channel access records (before planet members, since access FK to members)
-            await _db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM member_channel_access WHERE user_id = {dbUser.Id}");
 
             // Remove planet membership
             var members = _db.PlanetMembers.IgnoreQueryFilters().Where(x => x.UserId == dbUser.Id);
@@ -1349,6 +1457,7 @@ public class UserService
             await _db.SaveChangesAsync();
 
             await tran.CommitAsync();
+            InvalidateAccessFlags(dbUser.Id);
             _logger.LogInformation("Hard deleted user {UserName} ({UserId})", dbUser.Name, dbUser.Id);
 
             return TaskResult.SuccessResult;

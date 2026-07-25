@@ -103,10 +103,10 @@ window.blazorFuncs = {
         updateAvailablePromise
             .then(isAvailable => {
                 if (isAvailable) {
-                    DotNet.invokeMethodAsync("Valour.Client", "OnServiceUpdateAvailable").then(r => console.log(r));
+                    caller.invokeMethodAsync("OnServiceUpdateAvailable");
                 }
                 else {
-                    DotNet.invokeMethodAsync("Valour.Client", "OnServiceUpdateUnavailable").then(r => console.log(r));
+                    caller.invokeMethodAsync("OnServiceUpdateUnavailable");
                 }
             })
             .catch(error => {
@@ -318,10 +318,6 @@ async function playSound(name, volume = 0.4, layer = "effects") {
     const played = await playSoundInLayer(name, volume, layer);
     if (!played)
         playSoundFallback(name, volume);
-}
-
-function SetCardTitle(id, name) {
-   document.getElementById('text-' + id).firstElementChild.firstElementChild.innerHTML = name;
 }
 
 /* Content upload handling */

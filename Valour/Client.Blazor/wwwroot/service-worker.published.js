@@ -10,7 +10,18 @@ self.importScripts('https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/lo
 
 self.addEventListener('install', event => event.waitUntil(onInstall(event)));
 self.addEventListener('activate', event => event.waitUntil(onActivate(event)));
-self.addEventListener('fetch', event => event.respondWith(onFetch(event)));
+self.addEventListener('fetch', event => {
+    const requestUrl = new URL(event.request.url);
+
+    // The offline cache only contains this app's static assets. Let cross-origin
+    // CDN/API requests and non-GET requests pass through without service-worker
+    // interception; wrapping them in fetch() adds overhead and makes DevTools show
+    // a second service-worker request for the same network operation.
+    if (event.request.method !== 'GET' || requestUrl.origin !== self.location.origin)
+        return;
+
+    event.respondWith(onFetch(event));
+});
 
 const cacheNamePrefix = 'offline-cache-';
 const cacheName = `${cacheNamePrefix}${self.assetsManifest.version}-${COMMIT_HASH}`;
@@ -67,7 +78,10 @@ async function onInstall(event) {
     const assetsRequests = self.assetsManifest.assets
         .filter(asset => offlineAssetsInclude.some(pattern => pattern.test(asset.url)))
         .filter(asset => !offlineAssetsExclude.some(pattern => pattern.test(asset.url)))
-        .map(asset => new Request(asset.url, { integrity: asset.hash, cache: 'no-cache' }));
+        // Fingerprinted framework assets can be reused from the HTTP cache when a
+        // new service worker cache is populated. Non-fingerprinted assets still
+        // revalidate according to their Cache-Control response headers.
+        .map(asset => new Request(asset.url, { integrity: asset.hash, cache: 'default' }));
 
     await caches.open(cacheName).then(cache => cache.addAll(assetsRequests));
 }
@@ -99,6 +113,22 @@ async function onFetch(event) {
         const request = shouldServeIndexHtml ? 'index.html' : event.request;
         const cache = await caches.open(cacheName);
         cachedResponse = await cache.match(request);
+
+        // The assets manifest stores logical paths without the deploy-version
+        // query used by index.html and dynamic component imports. Reuse the
+        // current worker's cached asset only when the request version exactly
+        // matches this deployment. An older controlling worker therefore
+        // cannot accidentally serve an old script to a newly deployed page.
+        if (!cachedResponse && !shouldServeIndexHtml) {
+            const requestUrl = new URL(event.request.url);
+            const isCurrentVersion = requestUrl.searchParams.get('version') === COMMIT_HASH;
+            const isRuntimeConfig = requestUrl.pathname.endsWith('/valour-runtime-config.js');
+
+            if (isCurrentVersion && !isRuntimeConfig) {
+                requestUrl.searchParams.delete('version');
+                cachedResponse = await cache.match(requestUrl.toString());
+            }
+        }
     }
 
     return cachedResponse || fetch(event.request);
@@ -124,6 +154,8 @@ self.addEventListener('push', event => {
             vibrate: [100, 50, 100],
             badge: "https://app.valour.gg/_content/Valour.Client/media/logo/logo-square-256.png",
             tag,
+            // Without an explicit timestamp some Android shells render a bogus date
+            timestamp: payload.timeSent ? Number(payload.timeSent) : Date.now(),
             data: {
                 url: payload.url,
                 notificationId: payload.notificationId,

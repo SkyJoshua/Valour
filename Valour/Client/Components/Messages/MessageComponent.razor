@@ -24,7 +24,7 @@ else
      @onpointerdown="@OnPointerDown"
      @ondblclick="@OnDoubleClick"
      @ref="OuterRef">
-    
+
     <div class="left-info">
         @if (!Minimal)
         {
@@ -37,7 +37,7 @@ else
                 </style>
             }
             <div class="avatar-stack">
-                <UserAvatar User="@_user" Member="@_member" Size="38" ShowBadges="@(!_isInnerReply)" OnClick="@OnClickName"/>
+                <UserAvatar User="@_user" Member="@_member" OverrideUrl="@_message?.OverrideAvatarUrl" Size="38" ShowBadges="@(!_isInnerReply)" OnClick="@OnClickName"/>
             </div>
         }
         <div class="time-container">
@@ -51,11 +51,11 @@ else
         @if (!Minimal)
         {
             <div class="name-role-holder">
-                
-                <p @onclick="OnClickName" 
+
+                <p @onclick="OnClickName"
                    @oncontextpress:stopPropagation="true"
                    @oncontextpress="@OnNameContextMenu"
-                   class="author-name" 
+                   class="author-name"
                    style="color: @_nameColor;">
                     @_name
                 </p>
@@ -129,7 +129,7 @@ else
                     <p class="edit-flag">(Editing)</p>
                 }
             }
-            
+
             @if (_message.EditedTime != null && !_message.IsDeleted)
             {
                 <p class="edited-flag"> (Edited)</p>
@@ -158,8 +158,8 @@ else
             {
                 var added = _myReactions.Contains(reaction.emoji) ? "added" : "";
                 var newReaction = _newReactions != null && _newReactions.Contains(reaction.emoji) ? "new" : "";
-                
-                <TooltipTrigger Position="top">
+
+                <TooltipTrigger Position="top" OnShow="@(() => EnsureReactionUsersAsync(reaction.emoji))">
                     <ChildContent>
                         <div class="reaction @added @newReaction" @onclick="() => OnReactionClick(reaction.emoji)">
                             <img class="emoji" src="@GetReactionSrc(reaction.emoji)" alt="@GetReactionAlt(reaction.emoji)" title="@GetReactionAlt(reaction.emoji)"/>
@@ -206,7 +206,7 @@ else
 </div>
 
 @code {
-    
+
     public class Params
     {
         public ChatWindowComponent ChatComponent;
@@ -229,7 +229,7 @@ else
 
         if (string.IsNullOrWhiteSpace(content))
             return;
-        
+
         var isBigEmoji = DevicePreferences.BigEmojiMessages && MarkdownManager.IsEmojiOnlyMessage(_message.Content);
 
         builder.OpenElement(0, "div");
@@ -326,7 +326,7 @@ else
         builder.SetKey($"r-{_message.Id}-{_message.ReplyTo!.Id}-{_message.ReplyTo.EditedTime?.Ticks ?? 0}");
         builder.CloseComponent();
     };
-    
+
     public ElementReference OuterRef;
     public float FullHeight;
     private bool _renderWasEmpty = false;
@@ -334,19 +334,19 @@ else
     /* Set Params */
     [Parameter]
     public Params ParamData { get; set; }
-    
+
     private ChatWindowComponent _chat;
     private Message _message;
     private Message _lastMessage;
     private bool _ghost;
     private bool _isInnerReply;
     /* End Set Params */
-    
+
     private IMessageAuthor _author;
 
     /* Planet Message Only */
     private PlanetMember _member;
-    
+
     /* End Planet Message Only */
     private User _user;
 
@@ -402,6 +402,7 @@ else
     private const int MaxTooltipUsers = 5;
 
     private Dictionary<string, List<(User User, PlanetMember Member)>> _reactionUsers = new();
+    private HashSet<string> _loadingReactionUsers = new();
 
     private async Task<(User User, PlanetMember Member)> FetchReactionAuthorAsync(MessageReaction reaction)
     {
@@ -415,33 +416,36 @@ else
         return (user, member);
     }
 
-    private async Task BuildReactionUsersAsync()
+    private async Task EnsureReactionUsersAsync(string emoji)
     {
-        if (_message.Reactions is null) return;
+        if (_message.Reactions is null ||
+            _reactionUsers.ContainsKey(emoji) ||
+            !_loadingReactionUsers.Add(emoji))
+        {
+            return;
+        }
 
         try
         {
-            var changed = false;
-
-            foreach (var group in _message.Reactions.GroupBy(x => x.Emoji))
+            var users = new List<(User User, PlanetMember Member)>();
+            foreach (var reaction in _message.Reactions
+                         .Where(x => x.Emoji == emoji)
+                         .DistinctBy(x => x.AuthorUserId)
+                         .Take(MaxTooltipUsers))
             {
-                var users = new List<(User User, PlanetMember Member)>();
-
-                foreach (var reaction in group)
-                {
-                    users.Add(await FetchReactionAuthorAsync(reaction));
-                }
-
-                _reactionUsers[group.Key] = users;
-                changed = true;
+                users.Add(await FetchReactionAuthorAsync(reaction));
             }
 
-            if (changed)
-                await ReRender();
+            _reactionUsers[emoji] = users;
+            await ReRender();
         }
         catch (Exception e)
         {
             Client.Logger.Log("Message", "Error building reaction tooltips: " + e, "red");
+        }
+        finally
+        {
+            _loadingReactionUsers.Remove(emoji);
         }
     }
 
@@ -493,13 +497,13 @@ else
     private void CalculateReactions()
     {
         if (_ghost || _isInnerReply) return;
-        
+
         if (_message.Reactions is null || _message.Reactions.Count == 0)
         {
             _reactions = null;
             return;
         }
-        
+
         if (_reactions is null)
         {
             _reactions = new Dictionary<string, int>();
@@ -510,7 +514,7 @@ else
             _reactions.Clear();
             _myReactions.Clear();
         }
-        
+
         foreach (var reaction in _message.Reactions)
         {
             if (!_reactions.TryAdd(reaction.Emoji, 1))
@@ -525,14 +529,12 @@ else
         }
 
         BuildReactionRenderList();
-
-        _ = BuildReactionUsersAsync();
     }
 
     private void BuildReactionRenderList()
     {
         if (_ghost || _isInnerReply) return;
-        
+
         if (_showAllReactions)
         {
             _reactionsToRender = _reactions.OrderByDescending(x => x.Value)
@@ -547,26 +549,26 @@ else
                 .ToList();
         }
     }
-    
+
     private void SetShowAllReactions(bool show)
     {
         _showAllReactions = show;
         BuildReactionRenderList();
-        
+
         _ = ReRender();
     }
-    
+
     private void OnReactionAdded(MessageReaction reaction)
     {
         if (_ghost || _isInnerReply) return;
-        
+
         // Ensure reactions collections are initialized
         if (_reactions is null)
         {
             _reactions = new Dictionary<string, int>();
             _myReactions = new HashSet<string>();
         }
-        
+
         if (!_reactions.TryAdd(reaction.Emoji, 1))
         {
             _reactions[reaction.Emoji]++;
@@ -577,7 +579,7 @@ else
             {
                 _newReactions = new HashSet<string>();
             }
-            
+
             _newReactions.Add(reaction.Emoji);
         }
 
@@ -588,16 +590,19 @@ else
 
         BuildReactionRenderList();
 
-        _ = AddReactionUserAsync(reaction);
+        // Only maintain author details after this tooltip has actually been
+        // opened. Loading history must not fetch every reactor up front.
+        if (_reactionUsers.ContainsKey(reaction.Emoji))
+            _ = AddReactionUserAsync(reaction);
 
         // Re-render the component to show the updated reactions
         _ = ReRender();
     }
-    
+
     private void OnReactionRemoved(MessageReaction reaction)
     {
         if (_ghost || _isInnerReply) return;
-        
+
         if (_reactions is null)
             return;
 
@@ -617,7 +622,7 @@ else
         {
             _myReactions.Remove(reaction.Emoji);
         }
-        
+
         BuildReactionRenderList();
 
         _ = RemoveReactionUserAsync(reaction);
@@ -785,7 +790,7 @@ else
             }
         );
     }
-    
+
     private void OnNameContextMenu(ContextPressEventArgs e)
     {
         if (_member is not null)
@@ -843,7 +848,7 @@ else
         {
             if (_message is null)
                 return;
-            
+
             // Clear notification if one exists for this message
             var found = Client.NotificationService.UnreadNotificationsLookupBySource.TryGetValue(_message.Id, out var notification);
             if (found && notification.TimeRead is null)
@@ -858,14 +863,14 @@ else
     private async Task MonitorHeightChanges(bool firstRender)
     {
         if (_renderWasEmpty) return;
-        
+
         var dims = await BrowserUtils.GetElementDimensions(OuterRef);
         var newHeight = dims.Height;
 
         if (!firstRender)
         {
             var heightChange = Math.Abs(newHeight - FullHeight);
-            
+
             // Check for a change in height
             if (heightChange > 1)
             {
@@ -875,11 +880,11 @@ else
                     await _chat.ShiftScrollPosition(heightChange);
                 }
             }
-            
+
             // Console.WriteLine("Old height: " + FullHeight);
             // Console.WriteLine("New height: " + newHeight);
         }
-        
+
         FullHeight = dims.Height;
     }
 
@@ -991,7 +996,7 @@ else
 
         if (!_isInnerReply)
             _mentioned = _message.CheckIfMentioned();
-        
+
         CalculateTime();
 
         if (Minimal)
@@ -1027,7 +1032,7 @@ else
         _isInnerReply = ParamData.IsInnerReply;
         _chat = ParamData.ChatComponent;
         _animateIn = ParamData.AnimateIn && !_isInnerReply;
-        
+
         KeyboardListener.KeyDown += OnKeyDown;
         ClientFlags.Changed += OnClientFlagsChanged;
 
@@ -1036,10 +1041,10 @@ else
             Client.Logger.Log("Message", "MessageData is null", "red");
             return;
         }
-        
+
         // This prevents client sync issues from breaking the message
         _message.SetClient(Client);
-        
+
         await base.OnInitializedAsync();
 
         Id = $"m-{_message.ChannelId}-{_message.Id}";
@@ -1070,32 +1075,39 @@ else
         }
 
         _author = _member is not null ? _member : (_user ?? User.NotFound);
-        
+
         BuildMessage(false);
 
         _message.ReactionAdded += OnReactionAdded;
         _message.ReactionRemoved += OnReactionRemoved;
 
     }
-    
+
     /// <summary>
     /// Returns the name that should be displayed for the author of this message
     /// </summary>
     private string GetAuthorName()
     {
+        // Webhook messages carry their display name on the message itself
+        if (_message?.OverrideName is not null)
+            return _message.OverrideName;
+
         if (_member is not null)
             return _member.Name;
-        
+
         if (_user is not null)
             return _user.Name;
-        
+
         return "Unknown User";
     }
-    
+
     private string GetAuthorRoleTag()
     {
+        if (_message?.WebhookId is not null)
+            return "App";
+
         // If there's a member, we use the member's planet role
-        if (_member is not null) 
+        if (_member is not null)
             return _member.PrimaryRole?.Name ?? "Unknown Role";
 
         if (_user is not null)
@@ -1112,18 +1124,31 @@ else
 
         return Client.FriendService.FriendLookup.ContainsKey(ParamData.Message.AuthorUserId) ? "Friend" : "User";
     }
-    
+
     private string GetAuthorColor()
     {
+        if (_message?.WebhookId is not null)
+            return "#fff";
+
         return _member is not null ? (_member.PrimaryRole?.Color ?? "#fff") :
             (Client.FriendService.FriendLookup.ContainsKey(ParamData.Message.AuthorUserId) ? "#9ffff1" : "#fff");
     }
-    
-    public string GetAuthorAvatar() =>
-        _author?.GetAvatar(AvatarFormat.Webp128);
-    
+
+    public string GetAuthorAvatar()
+    {
+        // Webhook messages carry their avatar on the message itself
+        if (_message?.OverrideAvatarUrl is not null)
+            return _message.OverrideAvatarUrl;
+
+        return _author?.GetAvatar(AvatarFormat.Webp128);
+    }
+
     public string GetAuthorAvatarAnimated()
     {
+        // Override avatars are static
+        if (_message?.OverrideAvatarUrl is not null)
+            return null;
+
         if (_user is not null)
         {
             // TODO: Tweak when member avatars are implemented
@@ -1145,24 +1170,24 @@ else
         {
             return _author.GetFailedAvatar();
         }
-        
+
         return ISharedUser.DefaultAvatar;
     }
 
     private async Task OnKeyDown(KeyboardListener.KeyboardEvent e)
     {
         if (e.Key != "Escape") return;
-        if (Edit) 
+        if (Edit)
         {
             await CloseEditMode(true);
         }
- 
+
         if (_isInnerReply)
         {
             var input = _chat.InputComponent;
-            await input.RemoveReply(); 
+            await input.RemoveReply();
         }
-        
+
         if (_ghost)
         {
             var input = _chat.InputComponent;
@@ -1208,7 +1233,7 @@ else
     private void OnMemberUpdated(ModelUpdatedEvent<PlanetMember> eventData)
     {
         var render = false;
-        
+
         if (eventData.Changes.On(x => x.Nickname))
         {
             render = true;
@@ -1219,7 +1244,7 @@ else
         {
             render = true;
             _avatarUrl = GetAuthorAvatar();
-            
+
             if (_user.HasAnimatedAvatar)
             {
                 _animatedAvatarUrl = GetAuthorAvatarAnimated();
@@ -1229,7 +1254,7 @@ else
         if (eventData.Changes.On(x => x.RoleMembership))
         {
             render = true;
-            
+
             _nameTag = _member.PrimaryRole.Name;
             _nameColor = _member.PrimaryRole.Color;
         }
@@ -1239,7 +1264,7 @@ else
             _ = ReRender();
         }
     }
-    
+
     public void CheckMinimal()
     {
         if (_lastMessage != null && _message != null)
@@ -1306,5 +1331,5 @@ else
 
         return ShouldRenderValue;
     }
-    
+
 }

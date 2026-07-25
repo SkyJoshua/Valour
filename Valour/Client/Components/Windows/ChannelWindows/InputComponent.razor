@@ -47,9 +47,28 @@
                 <img class="menu-icon" src="_content/Valour.Client/media/Gif-Icon.svg" alt="" />
                 <span>Gifs</span>
             </button>
-            <button type="button" class="button" @onclick="@OnClickSendCurrency">
+            <button type="button" class="button pay-button" @onclick="@OnClickSendCurrency">
                 <img class="menu-icon" src="_content/Valour.Client/media/Pay-Icon.svg" alt="" />
-                <span>Pay</span>
+                <span class="menu-label">Pay</span>
+                @if (Client.EcoService.SelfGlobalAccount is not null || (_localCurrency is not null && _localAccount is not null))
+                {
+                    <span class="pay-balances">
+                        @if (Client.EcoService.SelfGlobalAccount is not null)
+                        {
+                            <span class="pay-balance" title="Valour Credits balance: @GetFullBalance(Client.EcoService.SelfGlobalAccount.BalanceValue) VC">
+                                <span>@CompactNumberFormatter.Format(Client.EcoService.SelfGlobalAccount.BalanceValue)</span>
+                                <span class="currency-code valour-credits-text">VC</span>
+                            </span>
+                        }
+                        @if (_localCurrency is not null && _localAccount is not null)
+                        {
+                            <span class="pay-balance" title="@ChatComponent.Channel.Planet.Name balance: @GetFullBalance(_localAccount.BalanceValue) @_localCurrency.ShortCode">
+                                <span>@CompactNumberFormatter.Format(_localAccount.BalanceValue)</span>
+                                <span class="currency-code local-code">@_localCurrency.ShortCode</span>
+                            </span>
+                        }
+                    </span>
+                }
             </button>
         </div>
         <div class="carrot"></div>
@@ -78,7 +97,7 @@
             </div>
         </div>
         
-        <button type="button" tabindex="0" class="input-action-btn upload-btn" title="Attach" aria-label="Attach File" @onclick="@ToggleUploadMenu" @onclick:stopPropagation="true">
+        <button type="button" tabindex="0" class="input-action-btn upload-btn" title="Add" aria-label="Open add menu" @onclick="@ToggleUploadMenu" @onclick:stopPropagation="true">
             <i class="bi bi-plus-circle"></i>
         </button>
 
@@ -102,6 +121,9 @@
 @code {
     
     private bool _loading = true;
+    private long? _loadedPayBalancePlanetId;
+    private Currency _localCurrency;
+    private EcoAccount _localAccount;
 
     [Parameter]
     public ChatWindowComponent ChatComponent { get; set; }
@@ -281,8 +303,49 @@
         _isUploadMenuOpen = !_isUploadMenuOpen;
         Refresh();
 
+        if (_isUploadMenuOpen)
+            _ = LoadLocalPayBalanceAsync();
+
         return Task.CompletedTask;
     }
+
+    private async Task LoadLocalPayBalanceAsync()
+    {
+        var planet = ChatComponent?.Channel?.Planet;
+        if (planet is null || planet.Id == ISharedPlanet.ValourCentralId)
+        {
+            _localCurrency = null;
+            _localAccount = null;
+            return;
+        }
+
+        if (_loadedPayBalancePlanetId == planet.Id)
+            return;
+
+        _loadedPayBalancePlanetId = planet.Id;
+
+        try
+        {
+            var currencyTask = Client.EcoService.FetchCurrencyByPlanetAsync(planet).AsTask();
+            var accountTask = Client.EcoService.FetchUserEcoAccountAsync(planet, Client.Me.Id).AsTask();
+            await Task.WhenAll(currencyTask, accountTask);
+
+            _localCurrency = await currencyTask;
+            _localAccount = await accountTask;
+        }
+        catch
+        {
+            // Balance previews are optional and must not interfere with chat.
+            _localCurrency = null;
+            _localAccount = null;
+            _loadedPayBalancePlanetId = null;
+        }
+
+        await InvokeAsync(Refresh);
+    }
+
+    private static string GetFullBalance(decimal balance) =>
+        balance.ToString("#,##0.########");
 
     private void HideUploadMenu()
     {
@@ -325,7 +388,9 @@
         if (planet is not null)
         {
             await planet.EnsureReadyAsync();
-            await planet.LoadEmojisAsync();
+            // Opening a planet loads its complete initial-data snapshot, including
+            // custom emojis. Fetching them again here duplicated that request on
+            // every channel startup.
             CanUserPost = await ChatComponent.Channel.HasPermissionAsync(planet.MyMember, ChatChannelPermissions.PostMessages);
             await AttachEmojiPlanetSubscriptionAsync(planet);
         }
@@ -808,7 +873,11 @@
         message.SetAttachments(attachments);
     }
 
-    public async Task UpdateMentionMenu(string text)
+    // Guards the ":shortcode:" auto-fill below: injecting the emoji itself fires
+    // another OnChatboxUpdate, which would otherwise re-trigger the auto-fill.
+    private bool _autoInjectingEmoji;
+
+    public async Task UpdateMentionMenu(string text, bool allowEmojiAutocomplete = false)
     {
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -822,6 +891,38 @@
         }
 
         var mode = text[0];
+
+        // When the user finishes typing a full ":shortcode:" (closing colon and
+        // all), replace it with the emoji immediately — no click required — as
+        // long as it's an exact match. Partial names still fall back to the
+        // picker below. Only runs on the typing path (allowEmojiAutocomplete).
+        if (allowEmojiAutocomplete && mode == ':' && !_autoInjectingEmoji
+            && text.Length >= 3 && text[^1] == ':')
+        {
+            var shortcode = text.Substring(1, text.Length - 2);
+            if (shortcode.Length > 0 && !shortcode.Contains(':'))
+            {
+                var exact = await FindExactEmojiAsync(shortcode);
+                if (exact is not null)
+                {
+                    _autoInjectingEmoji = true;
+                    try
+                    {
+                        if (MentionSelector.Visible)
+                            await MentionSelector.SetVisible(false);
+                        await InjectEmojiForAutocompleteAsync(exact);
+                    }
+                    finally
+                    {
+                        _autoInjectingEmoji = false;
+                    }
+
+                    Refresh();
+                    return;
+                }
+            }
+        }
+
         var isAutocompleteToken = mode == '@' || mode == '#' || mode == ':';
 
         // ":" autocomplete should wait until the user has typed at least one character.
@@ -1019,6 +1120,37 @@
         return merged;
     }
 
+    /// <summary>
+    /// Finds an emoji whose shortcode exactly equals <paramref name="shortcode"/>
+    /// (the text between the colons of a ":name:" token), or null if there is no
+    /// exact match. Used to auto-fill a fully typed emote without a click.
+    /// </summary>
+    private async Task<EmojiClickEvent> FindExactEmojiAsync(string shortcode)
+    {
+        var candidates = await SearchEmojisAsync(shortcode, 25);
+        return candidates.FirstOrDefault(e => EmojiShortcodeMatches(e, shortcode));
+    }
+
+    private static bool EmojiShortcodeMatches(EmojiClickEvent emoji, string shortcode)
+    {
+        bool Matches(string value) => !string.IsNullOrEmpty(value)
+            && string.Equals(value.Trim(':'), shortcode, StringComparison.OrdinalIgnoreCase);
+
+        if (Matches(emoji.Id) || Matches(emoji.Name) || Matches(emoji.Shortcodes) || Matches(emoji.Token))
+            return true;
+
+        if (emoji.Aliases is not null)
+        {
+            foreach (var alias in emoji.Aliases)
+            {
+                if (Matches(alias))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
     public ValueTask InjectEmojiForAutocompleteAsync(EmojiClickEvent emoji)
     {
         return InjectEmojiAsync(
@@ -1063,7 +1195,10 @@
     {
         //Console.WriteLine(input);
 
-        await UpdateMentionMenu(currentWord);
+        // Typing path — allow a fully typed ":shortcode:" to auto-fill into the
+        // emoji. The caret-move path (OnCaretUpdate) intentionally does not, so
+        // moving the cursor over existing text never rewrites it.
+        await UpdateMentionMenu(currentWord, allowEmojiAutocomplete: true);
 
         if (input is not null)
         {

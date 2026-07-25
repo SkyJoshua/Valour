@@ -5,6 +5,7 @@
 @inject IAppStorage LocalStorage
 @inject SoundManager SoundManager
 @inject IServiceProvider Services
+@inject AppBannerService Banners
 
 <BrowserUtils OnReady="@ReadyAsync" />
 
@@ -15,13 +16,11 @@
 <KeyboardListener />
 <MouseListener />
 
-<!-- Enable themes -->
-<ThemeComponent />
-
 <!-- Window Target helper -->
 <WindowTargetScanner />
 
 <TooltipRoot />
+<AppBannerHost />
 <GlobalRealtimeKitHostComponent />
 
 @if (_triedInitialLogin)
@@ -43,6 +42,10 @@ else
     <Loading Subtext='Logging you in...'></Loading>
 }
 
+<!-- Keep theme CSS after routed/component styles so equal-specificity custom
+     rules have the final say without requiring !important. -->
+<ThemeComponent />
+
 @code{
     private static readonly bool UseProd = false;
 
@@ -51,6 +54,9 @@ else
     private bool _browserReady;
     private bool _firstRenderReady;
     private bool _startupInitializationStarted;
+    private bool _isWebHost;
+    private Task _instanceManifestTask = Task.CompletedTask;
+    private DotNetObjectReference<ValourApp> _updateCallbackReference;
 
     protected override async Task OnInitializedAsync()
     {
@@ -58,6 +64,7 @@ else
         await DevicePreferences.LoadPreferences(LocalStorage);
         Logger.Log("App", "Loaded user preferences", "magenta");
         Client.AuthService.LoggedOut += OnTokenInvalidatedAsync;
+        Client.PlatformBannerChanged += OnPlatformBannerChangedAsync;
     }
 
     private Task OnTokenInvalidatedAsync(string reason)
@@ -71,6 +78,9 @@ else
             await JsRuntime.InvokeVoidAsync("location.reload");
         });
     }
+
+    private Task OnPlatformBannerChangedAsync(PlatformBanner banner) =>
+        InvokeAsync(() => Banners.SetPlatformBannerAsync(banner));
 
     // Runs when page is initialized
     private async Task ReadyAsync()
@@ -116,7 +126,9 @@ else
             string.Equals(uriData.Hostname, "0.0.0.1", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(uriData.Hostname, "0.0.0.0", StringComparison.OrdinalIgnoreCase);
 
-        if (hostMode != "hybrid" && !isFallbackNativeLoopbackOrigin)
+        _isWebHost = hostMode != "hybrid" && !isFallbackNativeLoopbackOrigin;
+
+        if (_isWebHost)
         {
             if (!UseProd)
             {
@@ -148,17 +160,21 @@ else
             Logger.Log("App", $"Using native/default API origin (hostMode={hostMode}, hostname={uriData.Hostname})", "magenta");
         }
 
-        // Learn this instance's hosts and capabilities. Applies configured
-        // domains to link building, CDN URLs, and route parsing; the UI uses
-        // the capability map to hide unavailable features.
-        var manifest = await Client.FetchInstanceManifestAsync();
-        if (manifest is not null)
-            Logger.Log("App", $"Connected to instance '{manifest.Name}' v{manifest.Version}", "magenta");
+        // The root route only needs the login shell for an anonymous visitor.
+        // Start instance discovery immediately, but don't put that network
+        // round trip on the critical path unless the requested public route
+        // needs the instance's host/capability map before it renders.
+        _instanceManifestTask = FetchAndApplyInstanceManifestAsync();
+        if (!string.Equals(uriData.Pathname, "/", StringComparison.Ordinal))
+            await _instanceManifestTask;
 
-        _ = JsRuntime.InvokeAsync<object>(
-            "blazorFuncs.registerClient",
-            DotNetObjectReference.Create(this)
-        );
+        // Service-worker updates only apply to the browser build. Native shells
+        // use INativeUpdateService instead of the web refresh banner.
+        if (_isWebHost)
+        {
+            _updateCallbackReference = DotNetObjectReference.Create(this);
+            _ = JsRuntime.InvokeVoidAsync("blazorFuncs.registerClient", _updateCallbackReference);
+        }
 
         _browserReady = true;
         await TryCompleteStartupInitializationAsync();
@@ -196,6 +212,9 @@ else
 
             if (!string.IsNullOrWhiteSpace(localToken))
             {
+                // Signed-in initialization consumes the instance host map, but
+                // anonymous login rendering doesn't need to wait for it.
+                await _instanceManifestTask;
                 var result = await Client.InitializeUser(localToken);
 
                 if (result.Code == 401)
@@ -212,12 +231,6 @@ else
             }
         }
 
-        // Ensure PrimaryNode is set up for anonymous API calls (e.g., invite pages)
-        if (Client.PrimaryNode is null)
-        {
-            await Client.NodeService.SetupPrimaryNodeAsync();
-        }
-
         _triedInitialLogin = true;
         Log("App", $"Tried initial login. Status: {Client.IsLoggedIn}", "magenta");
 
@@ -225,6 +238,28 @@ else
 
         _ = CheckForShellUpdateAsync();
     }
+
+    private async Task FetchAndApplyInstanceManifestAsync()
+    {
+        // Applies configured domains to link building, CDN URLs, and route
+        // parsing; authenticated initialization awaits this task above.
+        var manifest = await Client.FetchInstanceManifestAsync();
+        if (manifest is not null)
+        {
+            Logger.Log("App", $"Connected to instance '{manifest.Name}' v{manifest.Version}", "magenta");
+            await Banners.SetPlatformBannerAsync(manifest.PlatformBanner);
+        }
+    }
+
+    [JSInvokable]
+    public Task OnServiceUpdateAvailable()
+    {
+        Banners.ShowUpdateAvailable();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnServiceUpdateUnavailable() => Task.CompletedTask;
 
     private async Task CheckForShellUpdateAsync()
     {
@@ -248,7 +283,7 @@ else
             var modalData = new ConfirmModalComponent.ModalParams(
                 "Update Available",
                 $"Valour {update.LatestVersion} is available! You are currently on {nativeUpdate.CurrentVersion}.",
-                "Update",
+                nativeUpdate.UpdateActionLabel,
                 "Later",
                 () => StartShellUpdateAsync(nativeUpdate, update),
                 () => LocalStorage.SetStringAsync("skipped-shell-update", update.LatestVersion)
@@ -277,7 +312,7 @@ else
         }
         else
         {
-            await nativeUpdate.OpenReleasePageAsync(update.ReleasePageUrl);
+            await nativeUpdate.LaunchExternalUpdateAsync(update.ReleasePageUrl);
         }
     }
 

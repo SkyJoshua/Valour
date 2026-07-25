@@ -75,6 +75,11 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
     public readonly ModelStore<PlanetInvite, string> Invites = new();
 
     /// <summary>
+    /// The loaded webhooks of this planet (requires ManageWebhooks to load)
+    /// </summary>
+    public readonly ModelStore<PlanetWebhook, long> Webhooks = new();
+
+    /// <summary>
     /// The loaded permission nodes of this planet
     /// </summary>
     public readonly ModelStore<PermissionsNode, long> PermissionsNodes = new();
@@ -249,11 +254,35 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
     /// </summary>
     public string Vanity { get; set; }
 
+    /// <summary>
+    /// Owner-chosen default cadence for channel activity notifications
+    /// </summary>
+    public ChannelActivityCadence ActivityNotificationCadence { get; set; } = ChannelActivityCadence.Standard;
+
     public List<PlanetTag> Tags { get; set; }
 
     internal void SetMyMember(PlanetMember member)
     {
         MyMember = member;
+    }
+
+    /// <summary>
+    /// Returns the user's planet-wide activity alert override
+    /// </summary>
+    public async Task<ChannelActivityAlerts> FetchActivityAlertsAsync()
+    {
+        var result = await Node.GetJsonAsync<ChannelActivityAlerts>($"{IdRoute}/activityAlerts");
+        return result.Success ? result.Data : ChannelActivityAlerts.Auto;
+    }
+
+    /// <summary>
+    /// Sets the user's planet-wide activity alert override
+    /// </summary>
+    public async Task<TaskResult> SetActivityAlertsAsync(ChannelActivityAlerts setting)
+    {
+        var result = await Node.PostAsyncWithResponse<ChannelActivityAlerts>(
+            $"{IdRoute}/activityAlerts/{(int)setting}", null);
+        return result.WithoutData();
     }
 
     #region Planet Sub-Model CRUD
@@ -424,6 +453,7 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
         Roles.Dispose();
         Members.Dispose();
         Invites.Dispose();
+        Webhooks.Dispose();
         PermissionsNodes.Dispose();
         Bans.Dispose();
         Reports.Dispose();
@@ -712,6 +742,24 @@ public class Planet : ClientModel<Planet, long>, ISharedPlanet, IDisposable
         invites.SyncAll(Client, ModelInsertFlags.Batched);
 
         Invites.NotifySet();
+    }
+
+    /// <summary>
+    /// Loads the planet's webhooks from the server.
+    /// Requires the ManageWebhooks permission.
+    /// </summary>
+    public async Task LoadWebhooksAsync()
+    {
+        var webhooks = (await Node.GetJsonAsync<List<PlanetWebhook>>($"api/planets/{Id}/webhooks")).Data;
+
+        if (webhooks is null)
+            return;
+
+        Webhooks.Clear(true);
+
+        webhooks.SyncAll(Client, ModelInsertFlags.Batched);
+
+        Webhooks.NotifySet();
     }
 
     private Task _rolesLoadTask;

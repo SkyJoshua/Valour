@@ -1,5 +1,6 @@
 using Valour.Sdk.Client;
 using Valour.Shared;
+using Valour.Shared.Models;
 using Valour.Shared.Utilities;
 
 namespace Valour.Sdk.Services;
@@ -10,6 +11,13 @@ public class NotificationService
     /// Run when a notification is received
     /// </summary>
     public HybridEvent<Notification> NotificationReceived;
+
+    /// <summary>
+    /// Run when an existing unread notification's content is updated in place
+    /// (coalesced channel activity). Presentation surfaces (sound, popups)
+    /// intentionally do NOT fire for these — only content renderers should.
+    /// </summary>
+    public HybridEvent<Notification> NotificationContentUpdated;
 
     /// <summary>
     /// Run when notifications are cleared
@@ -89,14 +97,20 @@ public class NotificationService
         return result;
     }
     
+    // Channel activity notifications are excluded from badge counts on
+    // purpose: the red badge is reserved for direct relevance (mentions,
+    // replies). Activity entries live in the inbox and the unread dot only.
+
     public int GetPlanetNotifications(long planetId)
     {
-        return UnreadNotifications.Count(x => x.PlanetId == planetId);
+        return UnreadNotifications.Count(x => x.PlanetId == planetId
+                                              && x.Source != NotificationSource.ChannelActivity);
     }
 
     public int GetChannelNotifications(long channelId)
     {
-        return UnreadNotifications.Count(x => x.ChannelId == channelId);
+        return UnreadNotifications.Count(x => x.ChannelId == channelId
+                                              && x.Source != NotificationSource.ChannelActivity);
     }
 
     public void OnNotificationReceived(Notification notification)
@@ -105,8 +119,24 @@ public class NotificationService
         
         if (cached.TimeRead is null)
         {
-            if (_unreadNotifications.Any(x => x.Id == cached.Id))
+            // Coalesced notifications (channel activity) re-relay the same id
+            // with updated content. Notifications have no model cache, so
+            // replace the list entry in place (keeping its position). Updates
+            // fire NotificationContentUpdated only — re-firing
+            // NotificationReceived would replay sounds and popups per update
+            var existingIndex = _unreadNotifications.FindIndex(x => x.Id == cached.Id);
+            if (existingIndex >= 0)
+            {
+                _unreadNotifications[existingIndex] = cached;
+
+                if (cached.SourceId is not null)
+                {
+                    _unreadNotificationsLookupBySource[cached.SourceId.Value] = cached;
+                }
+
+                NotificationContentUpdated?.Invoke(cached);
                 return;
+            }
 
             _unreadNotifications.Add(cached);
 

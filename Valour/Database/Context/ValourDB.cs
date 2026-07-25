@@ -83,6 +83,11 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
     /// </summary>
     public DbSet<GifFavorite> GifFavorites { get; set; }
 
+    /// <summary>
+    /// Table for per-user favorite channels shown in the sidebar
+    /// </summary>
+    public DbSet<ChannelFavorite> ChannelFavorites { get; set; }
+
     // USER LOGIN AND PERMISSION STUFF //
 
     /// <summary>
@@ -146,6 +151,11 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
     public DbSet<PlanetInvite> PlanetInvites { get; set; }
 
     /// <summary>
+    /// Table for planet webhooks
+    /// </summary>
+    public DbSet<PlanetWebhook> PlanetWebhooks { get; set; }
+
+    /// <summary>
     /// Table for automod triggers
     /// </summary>
     public DbSet<AutomodTrigger> AutomodTriggers { get; set; }
@@ -169,6 +179,8 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
     /// Platform-level audit trail of staff tool usage.
     /// </summary>
     public DbSet<StaffAuditLog> StaffAuditLogs { get; set; }
+
+    public DbSet<PlatformBannerConfiguration> PlatformBannerConfigurations { get; set; }
 
     /// <summary>
     /// Staff-initiated MFA removals waiting out their safety delay.
@@ -229,7 +241,9 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
     public DbSet<PlanetWikiRevision> PlanetWikiRevisions { get; set; }
 
     public DbSet<UserChannelState> UserChannelStates { get; set; }
-    
+
+    public DbSet<UserPlanetSetting> UserPlanetSettings { get; set; }
+
     public DbSet<NodeStats> NodeStats { get; set; }
     
     public DbSet<Report> Reports { get; set; }
@@ -330,6 +344,7 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
         User.SetupDbModel(modelBuilder);
         UserSubscription.SetupDbModel(modelBuilder);
         UserChannelState.SetupDbModel(modelBuilder);
+        UserPlanetSetting.SetupDbModel(modelBuilder);
         PlanetMember.SetupDbModel(modelBuilder);
         PlanetRole.SetupDbModel(modelBuilder);
         PlanetEmoji.SetupDbModel(modelBuilder);
@@ -344,6 +359,7 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
         ThreadCommentBoost.SetupDbModel(modelBuilder);
         Report.SetupDbModel(modelBuilder);
         PlanetInvite.SetupDbModel(modelBuilder);
+        PlanetWebhook.SetupDbModel(modelBuilder);
         AuthToken.SetupDbModel(modelBuilder);
         OauthApp.SetupDbModel(modelBuilder);
         Channel.SetupDbModel(modelBuilder);
@@ -359,6 +375,7 @@ public partial class ValourDb : DbContext, IDataProtectionKeyContext
         AutomodLog.SetupDbModel(modelBuilder);
         ModerationAuditLog.SetupDbModel(modelBuilder);
         StaffAuditLog.SetupDbModel(modelBuilder);
+        PlatformBannerConfiguration.SetupDbModel(modelBuilder);
         PendingMfaRemoval.SetupDbModel(modelBuilder);
 
         Valour.Database.NodeStats.SetupDbModel(modelBuilder);

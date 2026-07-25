@@ -6,11 +6,13 @@ namespace Valour.Server.Services;
 public class UnreadService
 {
     private readonly ValourDb _db;
+    private readonly ChannelActivityService _channelActivityService;
     private readonly ILogger<UnreadService> _logger;
 
-    public UnreadService(ValourDb db, ILogger<UnreadService> logger)
+    public UnreadService(ValourDb db, ChannelActivityService channelActivityService, ILogger<UnreadService> logger)
     {
         _db = db;
+        _channelActivityService = channelActivityService;
         _logger = logger;
     }
 
@@ -20,9 +22,19 @@ public class UnreadService
     /// </summary>
     public async Task<long[]> GetUnreadChannels(long? planetId, long userId)
     {
-        return await _db.Channels
+        var channels = _db.Channels
             .AsNoTracking()
-            .Where(c => c.PlanetId == planetId && ISharedChannel.ChatChannelTypes.Contains(c.ChannelType))
+            .Where(c => c.PlanetId == planetId && ISharedChannel.ChatChannelTypes.Contains(c.ChannelType));
+
+        // Channel state is not an authorization boundary: a user normally has
+        // no state row for a channel they cannot access. Always scope the
+        // candidate channels to the user's actual membership first.
+        channels = planetId is null
+            ? channels.Where(c => c.Members.Any(m => m.UserId == userId))
+            : channels.Where(c => _db.PlanetMembers.Any(m =>
+                m.PlanetId == planetId.Value && m.UserId == userId));
+
+        return await channels
             .Where(c => !_db.UserChannelStates
                 .Where(s => s.UserId == userId && s.PlanetId == planetId)
                 .Any(s => s.ChannelId == c.Id && s.LastViewedTime >= c.LastUpdateTime)
@@ -102,6 +114,11 @@ public class UnreadService
                     member_id = EXCLUDED.member_id
             ");
         }
+
+        // Viewing a channel clears any coalesced activity notification for it
+        // and resets its activity cooldown (not on explicit mark-unread)
+        if (onlyMoveForward)
+            await _channelActivityService.HandleChannelViewedAsync(userId, channelId);
 
         var channelState = await _db.UserChannelStates.AsNoTracking()
             .FirstOrDefaultAsync(x => x.UserId == userId && x.ChannelId == channelId);

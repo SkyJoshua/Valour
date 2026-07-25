@@ -27,8 +27,6 @@ namespace Valour.Server;
 
 public partial class Program
 {
-    public static List<object> DynamicApis { get; set; }
-
     public static NodeAPI NodeAPI { get; set; }
     
     public static async Task Main(string[] args)
@@ -38,6 +36,16 @@ public partial class Program
 
         // Dev on linux will literally explode without this. Took a fun 5 hours to figure out.
         builder.WebHost.UseStaticWebAssets();
+
+        // Backstop against decompression-bomb images. Upload routes check
+        // dimensions before decoding, but this bounds any decode path that is
+        // ever added without that check.
+        SixLabors.ImageSharp.Configuration.Default.MemoryAllocator =
+            SixLabors.ImageSharp.Memory.MemoryAllocator.Create(
+                new SixLabors.ImageSharp.Memory.MemoryAllocatorOptions
+                {
+                    AllocationLimitMegabytes = 512
+                });
 
         // Load configs
         ConfigLoader.LoadConfigs();
@@ -126,47 +134,11 @@ public partial class Program
         InstanceApi.AddRoutes(app);
         EmbedAPI.AddRoutes(app);
         OauthAppApi.StartCodeCleanupTask();
+        TokenService.StartCacheSweepTask();
+        UserService.StartAccessFlagsSweepTask();
         VoiceSignallingApi.AddRoutes(app);
         
-        DynamicApis = new()
-        {
-            new DynamicAPI<UserApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetStorageApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetVoiceApi>().RegisterRoutes(app),
-            new DynamicAPI<FederationApi>().RegisterRoutes(app),
-            new DynamicAPI<ChannelApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetMemberApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetRoleApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetEmojiApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetRuleApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetReportApi>().RegisterRoutes(app),
-            new DynamicAPI<ThreadApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetWikiApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetInviteApi>().RegisterRoutes(app),
-            new DynamicAPI<PlanetBanApi>().RegisterRoutes(app),
-            new DynamicAPI<PermissionsNodeApi>().RegisterRoutes(app),
-            new DynamicAPI<AutomodApi>().RegisterRoutes(app),
-            new DynamicAPI<UserFriendApi>().RegisterRoutes(app),
-            new DynamicAPI<UserBlockApi>().RegisterRoutes(app),
-            new DynamicAPI<OauthAppApi>().RegisterRoutes(app),
-            new DynamicAPI<GifFavoriteApi>().RegisterRoutes(app),
-            new DynamicAPI<TenorFavoriteApi>().RegisterRoutes(app),
-            new DynamicAPI<EcoApi>().RegisterRoutes(app),
-            new DynamicAPI<NotificationApi>().RegisterRoutes(app),
-            new DynamicAPI<ReportApi>().RegisterRoutes(app),
-            new DynamicAPI<UserProfileApi>().RegisterRoutes(app),
-            new DynamicAPI<SubscriptionApi>().RegisterRoutes(app),
-            new DynamicAPI<StripeApi>().RegisterRoutes(app),
-            new DynamicAPI<ThemeApi>().RegisterRoutes(app),
-            new DynamicAPI<StaffApi>().RegisterRoutes(app),
-            new DynamicAPI<MessageApi>().RegisterRoutes(app),
-            new DynamicAPI<AttachmentApi>().RegisterRoutes(app),
-            new DynamicAPI<UnreadApi>().RegisterRoutes(app),
-            new DynamicAPI<TagApi>().RegisterRoutes(app),
-            new DynamicAPI<BotApi>().RegisterRoutes(app),
-            new DynamicAPI<UnsubscribeApi>().RegisterRoutes(app),
-        };
+        DynamicAPI.RegisterAll(app);
 
         NodeAPI = new NodeAPI();
         NodeAPI.AddRoutes(app);
@@ -191,7 +163,7 @@ public partial class Program
 
     public static void ConfigureApp(WebApplication app)
     {
-        app.UseCors("AllowAll");
+        app.UseCors("AllowedOrigins");
 
         if (app.Environment.IsDevelopment())
         {
@@ -272,6 +244,10 @@ public partial class Program
         }
 
         app.UseRouting();
+
+        // Must sit after routing so per-endpoint policies resolve, and before
+        // the endpoints themselves so limited routes are gated.
+        app.UseRateLimiter();
 
         app.UseAuthentication();
         app.UseAuthorization();
@@ -365,9 +341,11 @@ public partial class Program
     {
         var services = builder.Services;
 
+        services.AddValourRateLimiting(builder.Configuration);
+
         services.AddCors(options =>
         {
-            options.AddPolicy("AllowAll", builder =>
+            options.AddPolicy("AllowedOrigins", builder =>
             {
                 builder
                     .AllowAnyMethod()
@@ -472,23 +450,27 @@ public partial class Program
         services.AddSingleton<CdnStorageProvider>();
         services.AddSingleton<CdnBucketService>();
 
+        // These clients fetch user-supplied URLs (link unfurling, the media
+        // proxy, image size probing). Validating the URL and then handing the
+        // hostname to HttpClient leaves a DNS-rebinding window, because the
+        // handler resolves the name a second time at connect. SsrfSafeConnect
+        // dials the exact address it validated, closing that window. The
+        // timeout bounds a slow-loris origin holding a request open.
         services.AddHttpClient<ProxyHandler>(client =>
         {
             client.DefaultRequestHeaders.UserAgent.ParseAdd("ValourCDN/1.0");
+            client.Timeout = TimeSpan.FromSeconds(15);
+            client.MaxResponseContentBufferSize = CdnLimits.MaxProxyResponseBytes;
         })
-        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false
-        });
+        .ConfigurePrimaryHttpMessageHandler(() => SsrfSafeConnect.CreateHandler(allowPrivate: false));
 
         services.AddHttpClient("ProxyFetch", client =>
         {
             client.DefaultRequestHeaders.UserAgent.ParseAdd("ValourCDN/1.0");
+            client.Timeout = TimeSpan.FromSeconds(15);
+            client.MaxResponseContentBufferSize = CdnLimits.MaxProxyResponseBytes;
         })
-        .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false
-        });
+        .ConfigurePrimaryHttpMessageHandler(() => SsrfSafeConnect.CreateHandler(allowPrivate: false));
 
         services.AddHttpClient("PhotoDNA", client =>
         {
@@ -579,6 +561,8 @@ public partial class Program
         services.AddScoped<UserAttachmentService>();
         services.AddScoped<MediaSafetyService>();
         services.AddScoped<PlanetInviteService>();
+        services.AddScoped<PlanetWebhookService>();
+        services.AddSingleton<Valour.Server.Utilities.WebhookRateLimiter>();
         services.AddScoped<PlanetMemberService>();
         services.AddScoped<PlanetRoleService>();
         services.AddScoped<PlanetEmojiService>();
@@ -588,6 +572,7 @@ public partial class Program
         services.AddScoped<PlanetWikiService>();
         services.AddScoped<PlanetService>();
         services.AddScoped<GifFavoriteService>();
+        services.AddScoped<ChannelFavoriteService>();
         services.AddScoped<TenorFavoriteService>();
         services.AddScoped<AutomodService>();
         services.AddScoped<ModerationAuditService>();
@@ -599,11 +584,13 @@ public partial class Program
         services.AddScoped<UnreadService>();
         services.AddScoped<EcoService>();
         services.AddScoped<NotificationService>();
+        services.AddScoped<ChannelActivityService>();
         services.AddScoped<ReportService>();
         services.AddScoped<RegisterService>();
         services.AddScoped<SubscriptionService>();
         services.AddScoped<ThemeService>();
         services.AddScoped<StaffService>();
+        services.AddScoped<PlatformBannerService>();
         services.AddScoped<PlanetPermissionService>();
         services.AddScoped<VoiceStateService>();
         services.AddScoped<StartupService>();
@@ -618,6 +605,10 @@ public partial class Program
         services.AddSingleton<PushNotificationWorker>();
         // Register it as the IHostedService.
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<PushNotificationWorker>());
+
+        // Same pattern: queueable from scoped services, runs as a hosted service
+        services.AddSingleton<ChannelActivityWorker>();
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ChannelActivityWorker>());
 
         services.AddHostedService<PlanetMessageWorker>();
         services.AddHostedService<StatWorker>();

@@ -11,7 +11,7 @@
 @code {
     [CascadingParameter]
     public ModalRoot ModalRoot { get; set; }
-    
+
     private void OnClickUserSettings()
     {
         var data = new EditUserComponent.ModalParams()
@@ -21,4 +21,5 @@
         
         ModalRoot.OpenModal<EditUserComponent>(data);
     }
+
 }

@@ -1,7 +1,7 @@
 ﻿using System.Text;
 using Valour.Sdk.Client;
 using Valour.Sdk.ModelLogic;
-using Valour.Sdk.Models.Messages.Embeds;
+using Valour.Sdk.Models.Embeds;
 using Valour.Shared;
 using Valour.Shared.Authorization;
 using Valour.Shared.Channels;
@@ -175,6 +175,21 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
     protected override void OnDeleted()
     {
     }
+
+    public override async Task<TaskResult> DeleteAsync()
+    {
+        var result = await base.DeleteAsync();
+        if (result.Success)
+        {
+            // The server also broadcasts a delete event, but the request can
+            // complete before that event arrives (or while the planet realtime
+            // group is still joining). Remove locally so the sidebar never
+            // presents a successfully deleted channel as if it still exists.
+            Destroy(Client);
+        }
+
+        return result;
+    }
     
     /// <summary>
     /// Opens a connection to realtime planet channel data.
@@ -220,6 +235,13 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
 
     public override Channel AddToCache(ModelInsertFlags flags = ModelInsertFlags.None)
     {
+        // Cache updates copy every property, so a payload without member info
+        // (e.g. a realtime channel update) would erase the members already
+        // known for a direct/group channel. Carry them over instead.
+        if (Members is null && PlanetId is null &&
+            Client.Cache.Channels.TryGet(Id, out var cached) && cached.Members is not null)
+            Members = cached.Members;
+
         // Add to direct channel lookup if needed
         var dmKey = GetDirectChannelKey();
         if (dmKey is not null)
@@ -309,7 +331,7 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
         {
             UpdateTime = updateTime ?? DateTime.UtcNow
         };
-        
+
         var result = await Node.PostAsyncWithResponse<UserChannelState>($"{IdRoute}/state", request);
 
         if (result.Success)
@@ -320,6 +342,31 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
         {
             Client.Logger.Log("Channel", "Failed to update user state: " + result.Message, "yellow");
         }
+    }
+
+    /// <summary>
+    /// Returns the user's activity alert override for this channel
+    /// </summary>
+    public async Task<ChannelActivityAlerts> FetchActivityAlertsAsync()
+    {
+        var result = await Node.GetJsonAsync<ChannelActivityAlerts>($"{IdRoute}/activityAlerts");
+        return result.Success ? result.Data : ChannelActivityAlerts.Auto;
+    }
+
+    /// <summary>
+    /// Sets the user's activity alert override for this channel
+    /// </summary>
+    public async Task<TaskResult> SetActivityAlertsAsync(ChannelActivityAlerts setting)
+    {
+        var result = await Node.PostAsyncWithResponse<UserChannelState>(
+            $"{IdRoute}/activityAlerts/{(int)setting}", null);
+
+        if (result.Success)
+        {
+            Client.ChannelStateService.OnUserChannelStateUpdated(result.Data);
+        }
+
+        return result.WithoutData();
     }
 
     /// <summary>
@@ -523,8 +570,20 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
     public async Task<List<Message>> GetMessagesAsync(long index = long.MaxValue,
         int count = 10)
     {
+        var result = await GetMessagesWithResultAsync(index, count);
+        return result.Success ? result.Data : [];
+    }
+
+    /// <summary>
+    /// Returns messages without collapsing a failed history request into an
+    /// indistinguishable empty channel.
+    /// </summary>
+    public async Task<TaskResult<List<Message>>> GetMessagesWithResultAsync(
+        long index = long.MaxValue,
+        int count = 10)
+    {
         if (!ISharedChannel.ChatChannelTypes.Contains(ChannelType))
-            return new List<Message>();
+            return TaskResult<List<Message>>.FromData([]);
 
         var result = await Node.GetJsonAsync<List<Message>>(
                 $"{IdRoute}/messages?index={index}&count={count}");
@@ -532,12 +591,13 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
         if (!result.Success)
         {
             Client.Logger.Log("Channel",$"Failed to get messages from {Id}: {result.Message}", "Yellow");
-            return new List<Message>();
+            return TaskResult<List<Message>>.FromFailure(result);
         }
 
+        result.Data ??= [];
         result.Data.SyncAll(Client);
 
-        return result.Data;
+        return TaskResult<List<Message>>.FromData(result.Data);
     }
     
     /// <summary>
@@ -545,8 +605,16 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
     /// </summary>
     public async Task<List<Message>> GetMessagesAfterAsync(long afterId, int count = 10)
     {
+        var result = await GetMessagesAfterWithResultAsync(afterId, count);
+        return result.Success ? result.Data : [];
+    }
+
+    public async Task<TaskResult<List<Message>>> GetMessagesAfterWithResultAsync(
+        long afterId,
+        int count = 10)
+    {
         if (!ISharedChannel.ChatChannelTypes.Contains(ChannelType))
-            return new List<Message>();
+            return TaskResult<List<Message>>.FromData([]);
 
         var result = await Node.GetJsonAsync<List<Message>>(
             $"{IdRoute}/messages/after?afterId={afterId}&count={count}");
@@ -554,12 +622,13 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
         if (!result.Success)
         {
             Client.Logger.Log("Channel", $"Failed to get messages after {afterId} from {Id}: {result.Message}", "Yellow");
-            return new List<Message>();
+            return TaskResult<List<Message>>.FromFailure(result);
         }
 
+        result.Data ??= [];
         result.Data.SyncAll(Client);
 
-        return result.Data;
+        return TaskResult<List<Message>>.FromData(result.Data);
     }
 
     public async Task<List<Message>> SearchMessagesAsync(string searchText, int count = 20)
@@ -627,6 +696,10 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
         }
         else
         {
+            // Missing member data is not the same as a self-DM
+            if (Members is null)
+                return result;
+
             var others = Members.Where(x => x.UserId != Client.Me.Id).ToList();
             if (!others.Any())
             {
@@ -645,7 +718,11 @@ public class Channel : ClientPlanetModel<Channel, long>, ISharedChannel
     {
         if (PlanetId is not null)
             return Name;
-        
+
+        // Missing member data is not the same as a self-DM
+        if (Members is null)
+            return Name ?? "Direct Chat";
+
         var others = Members.Where(x => x.UserId != Client.Me.Id).ToList();
 
         if (!others.Any())

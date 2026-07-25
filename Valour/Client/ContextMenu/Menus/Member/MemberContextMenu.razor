@@ -155,20 +155,33 @@ else if (!_isSelf)
 	// different members opened in the same menu instance.
 	protected override void OnParametersSet()
 	{
-		_isFriendRequested = FriendService.OutgoingRequests.Any(x => x.Id == Data.Member.UserId);
-		_isFriend = FriendService.Friends.Any(x => x.Id == Data.Member.UserId);
-		_isSelf = Data.Member.UserId == Client.Me.Id;
-		_isBlocked = BlockService.IsBlocked(Data.Member.UserId);
+		var member = Data?.Member;
+		if (member is null)
+			return;
 
-		_canKick = Data.Member.Planet.MyMember.HasPermission(PlanetPermissions.Kick);
-		_canBan = Data.Member.Planet.MyMember.HasPermission(PlanetPermissions.Ban);
-		_canMute = Data.Member.Planet.MyMember.HasPermission(PlanetPermissions.ManageRoles);
+		_isFriendRequested = FriendService.OutgoingRequests.Any(x => x.Id == member.UserId);
+		_isFriend = FriendService.Friends.Any(x => x.Id == member.UserId);
+		_isSelf = member.UserId == Client.Me.Id;
+		_isBlocked = BlockService.IsBlocked(member.UserId);
+
+		(_canKick, _canBan, _canMute) = GetModerationPermissions(member.Planet?.MyMember);
+	}
+
+	internal static (bool CanKick, bool CanBan, bool CanMute) GetModerationPermissions(PlanetMember? currentMember)
+	{
+		if (currentMember is null)
+			return (false, false, false);
+
+		return (
+			currentMember.HasPermission(PlanetPermissions.Kick),
+			currentMember.HasPermission(PlanetPermissions.Ban),
+			currentMember.HasPermission(PlanetPermissions.ManageRoles));
 	}
 
 	private async Task OnClickMessage()
 	{
 		await CloseAsync();
-		
+
 		var channel = await ChannelService.FetchDmChannelAsync(Data.Member.UserId, true);
 		var newWindowContent = await ChatWindowComponent.GetDefaultContent(channel);
 		await WindowService.OpenWindowAtFocused(newWindowContent);
@@ -216,7 +229,7 @@ else if (!_isSelf)
 		{
 			Member = Data.Member
 		};
-		
+
 		ModalRoot.OpenModal<KickModal>(modalData);
 	}
 

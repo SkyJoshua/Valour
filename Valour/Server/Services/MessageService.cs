@@ -1,8 +1,8 @@
 #nullable enable annotations
 
 using System.Text.Json;
-using Valour.Sdk.Models.Messages.Embeds;
-using Valour.Sdk.Models.Messages.Embeds.Items;
+using Valour.Sdk.Models.Embeds;
+using Valour.Sdk.Models.Embeds.Items;
 using Valour.Server.Database;
 using Valour.Server.Cdn;
 using Valour.Server.Utilities;
@@ -25,6 +25,7 @@ public class MessageService
     private readonly AutomodService _automodService;
     private readonly ProxyHandler _proxyHandler;
     private readonly PlanetStorageService _planetStorageService;
+    private readonly ChannelActivityService _channelActivityService;
 
     public MessageService(
         ILogger<MessageService> logger,
@@ -37,7 +38,8 @@ public class MessageService
         HostedPlanetService hostedPlanetService,
         AutomodService automodService,
         ProxyHandler proxyHandler,
-        PlanetStorageService planetStorageService)
+        PlanetStorageService planetStorageService,
+        ChannelActivityService channelActivityService)
     {
         _logger = logger;
         _db = db;
@@ -50,6 +52,7 @@ public class MessageService
         _automodService = automodService;
         _proxyHandler = proxyHandler;
         _planetStorageService = planetStorageService;
+        _channelActivityService = channelActivityService;
     }
     
     /// <summary>
@@ -89,9 +92,9 @@ public class MessageService
             .FirstOrDefaultAsync(x => x.Id == id)).ToModel();
     
     /// <summary>
-    /// Used to post a message 
+    /// Used to post a message
     /// </summary>
-    public async Task<TaskResult<Message>> PostMessageAsync(Message message)
+    public async Task<TaskResult<Message>> PostMessageAsync(Message message, MessageWriteOptions writeOptions = null)
     {
         var user = await _db.Users.FindAsync(message.AuthorUserId);
         if (user is null)
@@ -199,6 +202,12 @@ public class MessageService
         // Import provenance is set only by trusted import workflows, never by
         // a client submitting a native message.
         message.ImportSource = null;
+
+        // Webhook identity is set only by the webhook execute path, never by
+        // a client submitting a native message.
+        message.WebhookId = writeOptions?.WebhookId;
+        message.OverrideName = writeOptions?.OverrideName;
+        message.OverrideAvatarUrl = writeOptions?.OverrideAvatarUrl;
         
         var attachments = message.Attachments?.Where(x => x is not null).ToList();
         if (attachments is not null)
@@ -239,6 +248,12 @@ public class MessageService
         
         // Handle mentions
         var mentions = MentionParser.Parse(message.Content);
+
+        // Webhooks have no member to check MentionAll against, so role
+        // mentions are stripped from their messages
+        if (writeOptions?.SuppressRoleMentions == true && mentions is not null)
+            mentions.RemoveAll(x => x.Type == MentionType.Role);
+
         PrepareMentions(message, mentions);
 
         if (message.Mentions is not null)
@@ -318,6 +333,20 @@ public class MessageService
         if (channel.PlanetId is not null)
         {
             _coreHubService.NotifyChannelStateUpdate(channel.PlanetId.Value, channel.Id, message.TimeSent);
+
+            if (channel.ChannelType == ChannelTypeEnum.PlanetChat)
+            {
+                try
+                {
+                    await _channelActivityService.RecordMessageAsync(
+                        channel.Id, channel.PlanetId.Value, message.Id, message.AuthorUserId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex,
+                        "Failed to record channel activity for channel {ChannelId}", channel.Id);
+                }
+            }
         }
 
         if (scanResult?.ActionsToRun.Count > 0 && memberModel is not null)
@@ -402,6 +431,9 @@ public class MessageService
         updated.ReplyTo = oldModel.ReplyTo;
         updated.Fingerprint = oldModel.Fingerprint;
         updated.ImportSource = old.ImportSource;
+        updated.WebhookId = old.WebhookId;
+        updated.OverrideName = old.OverrideName;
+        updated.OverrideAvatarUrl = old.OverrideAvatarUrl;
         
         // Sanity checks
         if (string.IsNullOrEmpty(updated.Content) && !HasAttachments(updated))
@@ -528,6 +560,10 @@ public class MessageService
             if (!migrationGuard.Success)
                 return migrationGuard;
         }
+
+        // Persisted replies are handled by the FK (SET NULL); not-yet-flushed
+        // replies must be cleared here or they would violate it on flush
+        PlanetMessageWorker.ClearReplyReferences(messageId);
 
         if (dbMessage is null)
         {
@@ -976,34 +1012,28 @@ public class MessageService
         if (string.IsNullOrWhiteSpace(attachment.Data))
             return TaskResult.FromFailure("Embed attachment must include data.");
 
-        if (attachment.Data.Length > 65535)
-            return TaskResult.FromFailure("Embed data must be under 65535 chars");
+        if (attachment.Data.Length > EmbedParser.MaxPayloadLength)
+            return TaskResult.FromFailure($"Embed data must be under {EmbedParser.MaxPayloadLength} chars");
 
-        Embed embed;
-        try
-        {
-            embed = JsonSerializer.Deserialize<Embed>(attachment.Data);
-        }
-        catch
-        {
-            return TaskResult.FromFailure("Embed data is invalid.");
-        }
-
-        if (embed?.Pages is null)
+        var embed = EmbedParser.TryParse(attachment.Data);
+        if (embed is null)
             return TaskResult.FromFailure("Embed data is invalid.");
 
-        foreach (var page in embed.Pages)
-        {
-            foreach (var item in page.GetAllItems())
-            {
-                if (item.ItemType != EmbedItemType.Media)
-                    continue;
+        var valid = EmbedParser.Validate(embed);
+        if (!valid.Success)
+            return valid;
 
-                var mediaAttachment = ((EmbedMediaItem)item).Attachment;
-                var result = MediaUriHelper.ScanMediaUri(mediaAttachment);
-                if (!result.Success)
-                    return TaskResult.FromFailure($"Error scanning media URI in embed | Page {page.Id} | ServerModel {item.Id}) | URI {mediaAttachment.Location}");
-            }
+        foreach (var item in embed.EnumerateItems())
+        {
+            if (item is not EmbedMediaItem media)
+                continue;
+
+            if (media.Attachment is null)
+                return TaskResult.FromFailure("Embed media item is missing its attachment.");
+
+            var result = MediaUriHelper.ScanMediaUri(media.Attachment);
+            if (!result.Success)
+                return TaskResult.FromFailure($"Error scanning media URI in embed | Item {item.Id} | URI {media.Attachment.Location}");
         }
 
         return TaskResult.SuccessResult;

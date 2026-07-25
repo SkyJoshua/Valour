@@ -44,6 +44,49 @@ public class UploadApi
         }
     }
     
+    /// <summary>
+    /// Largest decoded frame we will accept (8K, ~33 MP). The request size
+    /// limits bound the bytes on the wire, but not the decoded bitmap: a
+    /// heavily-compressed 30000x30000 PNG is only a few MB uploaded and roughly
+    /// 3.6 GB once decoded. Dimensions are read from the header before any
+    /// pixel buffer is allocated.
+    /// </summary>
+    private const long MaxDecodedPixelsPerFrame = 7680L * 4320L;
+
+    /// <summary>
+    /// Largest total decoded pixel count across all frames, so an animation
+    /// cannot multiply its way past the per-frame cap.
+    /// </summary>
+    private const long MaxDecodedPixelsAllFrames = 100_000_000L;
+
+    /// <summary>
+    /// Rejects images whose decoded size would be dangerous, before decoding.
+    /// Returns null when the image is acceptable.
+    /// </summary>
+    private static async Task<IResult> RejectIfOversizedAsync(IFormFile file)
+    {
+        ImageInfo info;
+
+        try
+        {
+            info = await Image.IdentifyAsync(file.OpenReadStream());
+        }
+        catch
+        {
+            return Results.BadRequest("Could not read image. Try a different format.");
+        }
+
+        var pixelsPerFrame = (long)info.Width * info.Height;
+        if (pixelsPerFrame > MaxDecodedPixelsPerFrame)
+            return Results.BadRequest("Image dimensions are too large.");
+
+        var frameCount = Math.Max(1, info.FrameMetadataCollection?.Count ?? 1);
+        if (pixelsPerFrame * frameCount > MaxDecodedPixelsAllFrames)
+            return Results.BadRequest("Image has too many total pixels across its frames.");
+
+        return null;
+    }
+
     public static JpegEncoder JpegEncoder = new JpegEncoder()
     {
         Quality = 75,
@@ -80,6 +123,7 @@ public class UploadApi
     public static void AddRoutes(WebApplication app)
     {
         app.MapPost("/upload/profile", AvatarImageRoute);
+        app.MapPost("/upload/memberavatar/{planetId}", MemberAvatarImageRoute);
         app.MapPost("/upload/profilebg", ProfileBackgroundImageRoute);
         app.MapPost("/upload/image", ImageRoute);
         app.MapPost("/upload/planet/{planetId}", PlanetImageRoute);
@@ -148,6 +192,9 @@ public class UploadApi
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
 
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
+
         var imageData = await ProcessImage(file, -1, -1);
         if (imageData is null)
             return Results.BadRequest("Unable to process image. Check format and size.");
@@ -202,6 +249,9 @@ public class UploadApi
 
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
         
         var image = await Image.LoadAsync(
             new() { TargetSize = new(AvatarSizes[0].Width, AvatarSizes[0].Height) }, 
@@ -232,6 +282,48 @@ public class UploadApi
         await hubService.NotifyUserChange(user.ToModel());
         
         return ValourResult.Ok(fullPath);
+    }
+
+    [FileUploadOperation.FileContentType]
+    [RequestSizeLimit(20_971_520)]
+    private static async Task<IResult> MemberAvatarImageRoute(
+        HttpContext ctx,
+        TokenService tokenService,
+        PlanetMemberService memberService,
+        CdnBucketService bucketService,
+        long planetId)
+    {
+        var authToken = await tokenService.GetCurrentTokenAsync();
+        if (authToken is null)
+            return ValourResult.InvalidToken();
+
+        var member = await memberService.GetByUserAsync(authToken.UserId, planetId);
+        if (member is null)
+            return ValourResult.NotPlanetMember();
+
+        var file = ctx.Request.Form.Files.FirstOrDefault();
+        if (file is null)
+            return ValourResult.BadRequest("Please attach a file.");
+        if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
+            return ValourResult.BadRequest("Unsupported file type.");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
+
+        using var image = await Image.LoadAsync(
+            new() { TargetSize = new(AvatarSizes[0].Width, AvatarSizes[0].Height) },
+            file.OpenReadStream());
+        HandleExif(image);
+
+        var imageId = $"{planetId}/{authToken.UserId}";
+        var upload = await UploadPublicImageVariants(
+            bucketService, image, "memberavatars", imageId, AvatarSizes, 0, true, false);
+        if (!upload.Success)
+            return ValourResult.Problem(upload.Message);
+
+        var fullPath = $"{ValourHosts.PublicCdnBaseUrl}/valour-public/{upload.Message}?v={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+        var result = await memberService.UpdateAvatarAsync(member.Id, fullPath);
+        return result.Success ? Results.Json(result.Data) : ValourResult.BadRequest(result.Message);
     }
     
     public static ImageSize[] ThemeBannerSizes =
@@ -268,6 +360,9 @@ public class UploadApi
         
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
         
         var image = await Image.LoadAsync(
             new() { TargetSize = new(ThemeBannerSizes[0].Width, ThemeBannerSizes[0].Height) }, 
@@ -344,6 +439,9 @@ public class UploadApi
 
         if (!isFont && !CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
 
         try
         {
@@ -459,6 +557,9 @@ public class UploadApi
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
 
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
+
         var image = await Image.LoadAsync(
             new() { TargetSize = new(ProfileBackgroundSizes[0].Width, ProfileBackgroundSizes[0].Height) }, 
             file.OpenReadStream()
@@ -524,6 +625,9 @@ public class UploadApi
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
 
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
+
         var image = await Image.LoadAsync(
             new() { TargetSize = new(ProfileBackgroundSizes[0].Width, ProfileBackgroundSizes[0].Height) }, 
             file.OpenReadStream()
@@ -586,6 +690,9 @@ public class UploadApi
 
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
         
         var image = await Image.LoadAsync(
             new() { TargetSize = new(PlanetSizes[0].Width, PlanetSizes[0].Height) }, 
@@ -662,6 +769,9 @@ public class UploadApi
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
 
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
+
         var createResult = await emojiService.CreateAsync(planetId, authToken.UserId, normalizedName, notify: false);
         if (!createResult.Success || createResult.Data is null)
             return ValourResult.BadRequest(createResult.Message);
@@ -729,6 +839,9 @@ public class UploadApi
 
         if (!CdnUtils.ImageSharpSupported.Contains(file.ContentType))
             return Results.BadRequest("Unsupported file type");
+
+        var oversized = await RejectIfOversizedAsync(file);
+        if (oversized is not null) return oversized;
 
         var image = await Image.LoadAsync(
             new() { TargetSize = new(AppSizes[0].Width, AppSizes[0].Height) }, 
@@ -802,44 +915,32 @@ public class UploadApi
                     }
                 }
             }
-            else
+            // Animated uploads historically only wrote the anim-* WebP and a
+            // JPEG. Most icon call sites request the ordinary WebP path, so
+            // those uploads appeared to have no image at all. Always write a
+            // still WebP from the first frame as well as any animated copies.
+            using Image<Rgba32>? stillImage = sizedImage.Frames.Count > 1
+                ? sizedImage.Frames.ExportFrame(0)
+                : null;
+            var stillSource = stillImage ?? sizedImage;
+
+            using (MemoryStream webpMs = new())
             {
-                Image<Rgba32>? frameImage = null;
-                var imageSource = sizedImage;
-                if (sizedImage.Frames.Count > 1)
+                await stillSource.SaveAsync(webpMs, webpEncoder);
+                webpMs.Position = 0;
+
+                var webpResult = await bucketService.UploadPublicImage(webpMs, $"{folder}/{id}/{size}.webp");
+                if (!webpResult.Success)
                 {
-                    frameImage = sizedImage.Frames.ExportFrame(0);
-                    imageSource = frameImage;
+                    return new TaskResult<bool>(false,
+                        "There was an issue uploading your image. Try a different format or size.", doAnimated);
                 }
-
-                using (MemoryStream webpMs = new())
-                {
-                    await imageSource.SaveAsync(webpMs, webpEncoder);
-                    webpMs.Position = 0;
-
-                    var webpResult = await bucketService.UploadPublicImage(webpMs, $"{folder}/{id}/{size}.webp");
-                    if (!webpResult.Success)
-                    {
-                        return new TaskResult<bool>(false,
-                            "There was an issue uploading your image. Try a different format or size.", doAnimated);
-                    }
-                }
-
-                frameImage?.Dispose();
             }
 
             // Always save a jpeg using a still frame.
-            Image<Rgba32>? stillImage = null;
-            var jpegSource = sizedImage;
-            if (sizedImage.Frames.Count > 1)
-            {
-                stillImage = sizedImage.Frames.ExportFrame(0);
-                jpegSource = stillImage;
-            }
-
             using (MemoryStream jpegMs = new())
             {
-                await jpegSource.SaveAsync(jpegMs, JpegEncoder);
+                await stillSource.SaveAsync(jpegMs, JpegEncoder);
                 jpegMs.Position = 0;
 
                 var jpegResult = await bucketService.UploadPublicImage(jpegMs, $"{folder}/{id}/{size}.jpg");
@@ -849,8 +950,6 @@ public class UploadApi
                         "There was an issue uploading your image. Try a different format or size.", doAnimated);
                 }
             }
-
-            stillImage?.Dispose();
         }
 
         return new TaskResult<bool>(true, resultPath, doAnimated);
@@ -877,6 +976,13 @@ public class UploadApi
         string ext = Path.GetExtension(file.FileName);
         if (CdnUtils.IsExecutableUpload(file.FileName, file.ContentType))
             return Results.BadRequest("Executable files are not allowed");
+
+        // Raw bytes are stored and served under a Valour host, so HTML/SVG/XML
+        // would execute script on our own origin if a browser ever rendered it
+        // inline. The serve path also forces a download, but reject here too so
+        // the content never exists on a Valour origin in the first place.
+        if (CdnUtils.IsActiveContentUpload(file.FileName, file.ContentType))
+            return Results.BadRequest("HTML, SVG, and XML files are not allowed");
 
         using MemoryStream ms = new();
         await file.CopyToAsync(ms);

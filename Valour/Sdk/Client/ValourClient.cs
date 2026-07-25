@@ -7,6 +7,7 @@ using Valour.Sdk.Utility;
 using Valour.Shared;
 using Valour.Shared.Hosting;
 using Valour.Shared.Models;
+using Valour.Shared.Utilities;
 
 namespace Valour.Sdk.Client;
 
@@ -28,6 +29,7 @@ namespace Valour.Sdk.Client;
 
 public class ValourClient
 {
+    public HybridEvent<PlatformBanner> PlatformBannerChanged;
     //////////////
     // Services //
     //////////////
@@ -44,6 +46,7 @@ public class ValourClient
     public readonly NodeService NodeService;
     public readonly PlanetService PlanetService;
     public readonly ChannelService  ChannelService;
+    public readonly ChannelFavoriteService ChannelFavoriteService;
     public readonly PermissionService PermissionService;
     public readonly KlipyService KlipyService;
     public readonly TranslationService TranslationService;
@@ -124,6 +127,7 @@ public class ValourClient
         MessageService = new MessageService(this);
         PlanetService = new PlanetService(this);
         ChannelService = new ChannelService(this);
+        ChannelFavoriteService = new ChannelFavoriteService(this);
         ChannelStateService = new ChannelStateService(this);
         PermissionService = new PermissionService(this);
         BotService = new BotService(this);
@@ -278,6 +282,7 @@ public class ValourClient
             BlockService.FetchBlocksAsync(),
             PlanetService.FetchJoinedPlanetsAsync(),
             KlipyService.LoadGifFavoritesAsync(),
+            ChannelFavoriteService.LoadFavoritesAsync(),
             ChannelService.LoadDmChannelsAsync(),
             NotificationService.LoadUnreadNotificationsAsync(),
             UnreadService.FetchUnreadPlanetsAsync(),
@@ -307,12 +312,23 @@ public class ValourClient
                 return false;
 
             var data = response.Data;
-            FriendService.ApplyFriendData(data.FriendData);
+            FriendService.ApplyFriendData(
+                data.FriendUsers,
+                data.AddedFriendIds,
+                data.AddedByFriendIds);
             BlockService.ApplyBlocks(data.Blocks);
             await PlanetService.ApplyJoinedPlanetsAsync(data.Planets, data.FederatedMemberships);
+            foreach (var member in data.MyPlanetMembers)
+                member.User = Me;
             data.MyPlanetMembers.SyncAll(this, ModelInsertFlags.Batched);
             KlipyService.ApplyGifFavorites(data.GifFavorites);
-            ChannelService.ApplyDirectChannels(data.DirectChannels);
+            ChannelFavoriteService.ApplyFavorites(data.ChannelFavorites);
+
+            if (data.DirectChatChannels is not null)
+                ChannelService.ApplyDirectChannels(data.DirectChatChannels);
+            else
+                await ChannelService.LoadDmChannelsAsync();
+            EcoService.ApplySelfGlobalAccount(data.GlobalAccount);
             NotificationService.ApplyUnreadNotifications(data.UnreadNotifications);
             UnreadService.ApplyUnreadPlanets(data.UnreadPlanets);
             UnreadService.ApplyUnreadDirectChannels(data.UnreadDirectChannels);
