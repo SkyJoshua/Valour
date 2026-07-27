@@ -19,6 +19,14 @@ public static class ClientFlags
     /// isn't exposed as a user-facing toggle.
     /// </summary>
     public const bool ShowModdedBadge = true;
+
+    /// <summary>
+    /// Whether this user reports their own presence to the modded client online
+    /// tracker, making them visible to others via the modded badge/online list.
+    /// Turning this off only stops reporting your own presence - you can still
+    /// see who else is online.
+    /// </summary>
+    public static bool ReportPresence { get; set; } = true;
     public static bool AlwaysShowTimestamps { get; set; } = false;
     public static TimestampFormat TimestampFormat { get; set; } = TimestampFormat.TwelveHour;
 

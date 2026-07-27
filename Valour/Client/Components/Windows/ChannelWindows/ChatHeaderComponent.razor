@@ -133,6 +133,17 @@
                         </div>
                     </div>
 
+                    <div class="channel-setting" @onclick="@OnClickReportPresence">
+                        <div class="setting-icon"><i class="bi @(ClientFlags.ReportPresence ? "bi-broadcast" : "bi-broadcast-pin")"></i></div>
+                        <div class="setting-text">
+                            <span class="setting-title">Visible in Online List</span>
+                            <span class="setting-subtitle">Let other modded client users see that you're online</span>
+                        </div>
+                        <div class="toggle-switch @(ClientFlags.ReportPresence ? "on" : "")">
+                            <div class="toggle-knob"></div>
+                        </div>
+                    </div>
+
                 }
             </div>
         }
@@ -176,10 +187,13 @@
         if (await LocalStorage.ContainsKeyAsync("double-click-edit-reply"))
             ClientFlags.DoubleClickEditReply = await LocalStorage.GetAsync<bool>("double-click-edit-reply");
 
+        if (await LocalStorage.ContainsKeyAsync("report-presence"))
+            ClientFlags.ReportPresence = await LocalStorage.GetAsync<bool>("report-presence");
+
         // Always fetch the online list so everyone can see others' badges.
         ModdedPresenceService.StartListRefresh(JsRuntime);
 
-        if (Client.Me is not null)
+        if (Client.Me is not null && ClientFlags.ReportPresence)
             ModdedPresenceService.StartReporting(Client.Me.Id, Client.Me.Name);
     }
 
@@ -248,6 +262,24 @@
     {
         ClientFlags.DoubleClickEditReply = !ClientFlags.DoubleClickEditReply;
         await LocalStorage.SetAsync("double-click-edit-reply", ClientFlags.DoubleClickEditReply);
+        StateHasChanged();
+    }
+
+    private async Task OnClickReportPresence()
+    {
+        ClientFlags.ReportPresence = !ClientFlags.ReportPresence;
+        await LocalStorage.SetAsync("report-presence", ClientFlags.ReportPresence);
+
+        if (ClientFlags.ReportPresence)
+        {
+            if (Client.Me is not null)
+                ModdedPresenceService.StartReporting(Client.Me.Id, Client.Me.Name);
+        }
+        else
+        {
+            ModdedPresenceService.StopReporting();
+        }
+
         StateHasChanged();
     }
 
