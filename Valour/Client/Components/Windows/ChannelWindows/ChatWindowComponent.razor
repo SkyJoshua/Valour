@@ -1698,9 +1698,11 @@
         return Client.PrimaryNode;
     }
 
+    public Task RefreshActiveViewingLeaseState() => UpdateActiveViewingLeaseStateAsync();
+
     private async Task UpdateActiveViewingLeaseStateAsync()
     {
-        if (IsActivelyVisibleToUser())
+        if (IsActivelyVisibleToUser() && !ClientFlags.GhostViewing)
         {
             await StartActiveViewingLeaseAsync();
         }

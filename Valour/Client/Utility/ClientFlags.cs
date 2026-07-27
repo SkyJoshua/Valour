@@ -12,6 +12,12 @@ public enum TimestampFormat
 public static class ClientFlags
 {
     public static bool GhostTyping { get; set; } = false;
+
+    /// <summary>
+    /// When enabled, the client never reports active-viewing state to the server,
+    /// so other users can't see when you're actively looking at a channel.
+    /// </summary>
+    public static bool GhostViewing { get; set; } = false;
     public static bool ShowDeletedMessages { get; set; } = true;
     public static bool ShowEditHistory { get; set; } = true;
     /// <summary>

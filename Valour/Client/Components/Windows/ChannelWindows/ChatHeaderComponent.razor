@@ -100,6 +100,17 @@
                         </div>
                     </div>
 
+                    <div class="channel-setting" @onclick="@OnClickGhostViewing">
+                        <div class="setting-icon"><i class="bi @(ClientFlags.GhostViewing ? "bi-eye-slash-fill" : "bi-eye-fill")"></i></div>
+                        <div class="setting-text">
+                            <span class="setting-title">Ghost Viewing</span>
+                            <span class="setting-subtitle">Hide that you're actively viewing a channel</span>
+                        </div>
+                        <div class="toggle-switch @(ClientFlags.GhostViewing ? "on" : "")">
+                            <div class="toggle-knob"></div>
+                        </div>
+                    </div>
+
                     <div class="channel-setting" @onclick="@OnClickShowDeletedMessages">
                         <div class="setting-icon"><i class="bi bi-trash3-fill"></i></div>
                         <div class="setting-text">
@@ -175,6 +186,9 @@
         if (await LocalStorage.ContainsKeyAsync("ghost-typing"))
             ClientFlags.GhostTyping = await LocalStorage.GetAsync<bool>("ghost-typing");
 
+        if (await LocalStorage.ContainsKeyAsync("ghost-viewing"))
+            ClientFlags.GhostViewing = await LocalStorage.GetAsync<bool>("ghost-viewing");
+
         if (await LocalStorage.ContainsKeyAsync("show-deleted-messages"))
             ClientFlags.ShowDeletedMessages = await LocalStorage.GetAsync<bool>("show-deleted-messages");
 
@@ -240,6 +254,14 @@
     {
         ClientFlags.GhostTyping = !ClientFlags.GhostTyping;
         await LocalStorage.SetAsync("ghost-typing", ClientFlags.GhostTyping);
+        StateHasChanged();
+    }
+
+    private async Task OnClickGhostViewing()
+    {
+        ClientFlags.GhostViewing = !ClientFlags.GhostViewing;
+        await LocalStorage.SetAsync("ghost-viewing", ClientFlags.GhostViewing);
+        await ChatComponent.RefreshActiveViewingLeaseState();
         StateHasChanged();
     }
 
