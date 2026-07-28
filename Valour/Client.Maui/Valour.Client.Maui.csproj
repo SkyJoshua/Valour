@@ -47,7 +47,7 @@
         <ApplicationTitle>Modded Valour</ApplicationTitle>
 
         <!-- App Identifier --> 
-        <ApplicationId>gg.valour.app</ApplicationId>
+        <ApplicationId>xyz.skyjoshua.moddedvalour</ApplicationId>
 
         <!-- Versions -->
         <ApplicationDisplayVersion>0.8.0</ApplicationDisplayVersion>

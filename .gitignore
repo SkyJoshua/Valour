@@ -414,3 +414,6 @@ google-services.json
 # Self-host compose secrets
 .env
 run.sh
+
+# Local Android APK build output
+/Builds/
