@@ -44,7 +44,7 @@
         <MauiXamlInflator>SourceGen</MauiXamlInflator>
 
         <!-- Display name -->
-        <ApplicationTitle>Valour</ApplicationTitle>
+        <ApplicationTitle>Modded Valour</ApplicationTitle>
 
         <!-- App Identifier --> 
         <ApplicationId>gg.valour.app</ApplicationId>
