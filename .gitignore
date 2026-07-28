@@ -413,3 +413,4 @@ dotnet-install.sh
 google-services.json
 # Self-host compose secrets
 .env
+run.sh
