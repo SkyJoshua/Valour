@@ -17,8 +17,8 @@ public class AppUpdateInfo
 /// </summary>
 public static class AppUpdateChecker
 {
-    public const string LatestReleaseApiUrl = "https://api.github.com/repos/Valour-Software/Valour/releases/latest";
-    public const string ReleasesPageUrl = "https://github.com/Valour-Software/Valour/releases/latest";
+    public const string LatestReleaseApiUrl = "https://api.github.com/repos/SkyJoshua/Valour/releases/latest";
+    public const string ReleasesPageUrl = "https://github.com/SkyJoshua/Valour/releases/latest";
 
     /// <summary>
     /// Returns update info if a release newer than <paramref name="currentVersion"/>
@@ -43,7 +43,11 @@ public static class AppUpdateChecker
             if (release?.TagName is null)
                 return null;
 
-            if (!Version.TryParse(release.TagName.TrimStart('v', 'V'), out var latest))
+            var digitStart = 0;
+            while (digitStart < release.TagName.Length && !char.IsDigit(release.TagName[digitStart]))
+                digitStart++;
+
+            if (!Version.TryParse(release.TagName[digitStart..], out var latest))
                 return null;
 
             if (latest <= current)
