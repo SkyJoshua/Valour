@@ -19,7 +19,7 @@ namespace Valour.Client.Utility;
 /// </summary>
 public static class ModdedPresenceService
 {
-    private const string BaseUrl = "https://skyjoshua.xyz/valour/api";
+    private const string BaseUrl = "https://skyjoshua.xyz/api/modded";
     private const string ClientKey = "f91a43d4b27a75714d4b1cf134fca32c8c50ba9a3734b945";
     private static readonly TimeSpan ReportInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ListRefreshFallbackInterval = TimeSpan.FromMinutes(5);
