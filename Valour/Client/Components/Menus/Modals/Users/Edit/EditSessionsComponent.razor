@@ -107,7 +107,7 @@
                             @if (token.AppId == "VALOUR")
                             {
                                 <img src="_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
-                                <span class="app-name">@GetModdedClientName(token)</span>
+                                <span class="app-name">Valour Web Client</span>
                             }
                             else if (_appInfoCache.TryGetValue(token.AppId, out var appInfo))
                             {
@@ -172,19 +172,6 @@
     private Dictionary<string, PublicOauthAppData> _appInfoCache = new();
 
     private List<string> _multiAuthMethods;
-
-    private static string GetModdedClientName(AuthTokenInfo token)
-    {
-        // We only know the platform for the session making this very request -
-        // there's no per-session platform data for the others, so don't guess.
-        if (!token.IsCurrent)
-            return "Valour Modded Client";
-
-        if (OperatingSystem.IsAndroid())
-            return "Modded Client for Android";
-
-        return "Modded Client for Web";
-    }
 
     private bool IsExpired(AuthTokenInfo token)
     {
