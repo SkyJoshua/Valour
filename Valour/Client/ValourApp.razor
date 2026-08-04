@@ -281,8 +281,8 @@ else
             Log("App", $"Native shell update available: {nativeUpdate.CurrentVersion} -> {update.LatestVersion}", "magenta");
 
             var modalData = new ConfirmModalComponent.ModalParams(
-                "Update Available",
-                $"Valour {update.LatestVersion} is available! You are currently on {nativeUpdate.CurrentVersion}.",
+                "Modded Client Update Available",
+                $"Valour Modded Client {update.LatestVersion} is available! You are currently on {nativeUpdate.CurrentVersion}.",
                 nativeUpdate.UpdateActionLabel,
                 "Later",
                 () => StartShellUpdateAsync(nativeUpdate, update),
@@ -304,7 +304,7 @@ else
             await ToastContainer.Instance.WaitToastWithTaskResult(new ProgressToastData<TaskResult>()
             {
                 ProgressTask = nativeUpdate.DownloadAndInstallAsync(update.ApkDownloadUrl),
-                Title = "Updating Valour",
+                Title = "Updating Modded Client",
                 Message = "Downloading update...",
                 SuccessMessage = "Follow the system prompt to finish installing",
                 FailureMessage = "Update failed"
