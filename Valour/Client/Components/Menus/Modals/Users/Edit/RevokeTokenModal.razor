@@ -11,8 +11,8 @@
                 <div class="token-app">
                     @if (Data.Token.AppId == "VALOUR")
                     {
-                        <img src="../_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
-                        <span class="app-name">Valour Modded Client</span>
+                        <img src="_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
+                        <span class="app-name">@GetModdedClientName()</span>
                     }
                     else if (_appInfo != null)
                     {
@@ -21,7 +21,7 @@
                     }
                     else
                     {
-                        <img src="../_content/Valour.Client/media/logo/logo-64.png" alt="OAuth App" class="app-icon" />
+                        <img src="_content/Valour.Client/media/logo/logo-64.png" alt="OAuth App" class="app-icon" />
                         <span class="app-name">OAuth App (@Data.Token.AppId)</span>
                     }
                 </div>
@@ -64,6 +64,14 @@
                 // If we can't fetch the app info, we'll just show the default
             }
         }
+    }
+
+    private static string GetModdedClientName()
+    {
+        if (OperatingSystem.IsAndroid())
+            return "Modded Client for Android";
+
+        return "Modded Client for Web";
     }
 
     private string GetTitle() => Data.IsRevokeAll ? "Revoke All Other Sessions" : "Revoke Session";

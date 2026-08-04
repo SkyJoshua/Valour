@@ -106,8 +106,8 @@
                         <div class="token-app">
                             @if (token.AppId == "VALOUR")
                             {
-                                <img src="../_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
-                                <span class="app-name">Valour Modded Client</span>
+                                <img src="_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
+                                <span class="app-name">@GetModdedClientName()</span>
                             }
                             else if (_appInfoCache.TryGetValue(token.AppId, out var appInfo))
                             {
@@ -116,7 +116,7 @@
                             }
                             else
                             {
-                                <img src="../_content/Valour.Client/media/logo/logo-64.png" alt="OAuth App" class="app-icon" />
+                                <img src="_content/Valour.Client/media/logo/logo-64.png" alt="OAuth App" class="app-icon" />
                                 <span class="app-name">OAuth App (@token.AppId)</span>
                             }
                         </div>
@@ -172,6 +172,14 @@
     private Dictionary<string, PublicOauthAppData> _appInfoCache = new();
 
     private List<string> _multiAuthMethods;
+
+    private static string GetModdedClientName()
+    {
+        if (OperatingSystem.IsAndroid())
+            return "Modded Client for Android";
+
+        return "Modded Client for Web";
+    }
 
     private bool IsExpired(AuthTokenInfo token)
     {
