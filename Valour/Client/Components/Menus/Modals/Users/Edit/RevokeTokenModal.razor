@@ -12,7 +12,7 @@
                     @if (Data.Token.AppId == "VALOUR")
                     {
                         <img src="_content/Valour.Client/media/logo/logo-64.png" alt="Valour" class="app-icon" />
-                        <span class="app-name">@GetModdedClientName()</span>
+                        <span class="app-name">@GetModdedClientName(Data.Token)</span>
                     }
                     else if (_appInfo != null)
                     {
@@ -66,8 +66,13 @@
         }
     }
 
-    private static string GetModdedClientName()
+    private static string GetModdedClientName(AuthTokenInfo token)
     {
+        // We only know the platform for the session making this very request -
+        // there's no per-session platform data for the others, so don't guess.
+        if (!token.IsCurrent)
+            return "Valour Modded Client";
+
         if (OperatingSystem.IsAndroid())
             return "Modded Client for Android";
 
